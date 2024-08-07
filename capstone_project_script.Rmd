@@ -1,0 +1,2744 @@
+---
+title: "capstone_project_script"
+author: "Kaja Adamczyk"
+date: "2024-08-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Markdown structure:
+1) Cleaning, merging datasets
+2) Descriptive statistics
+3) Cosine similarity
+4) Word2vec
+5) Structural Topic Model
+6) Phrase-bias
+7) Supervised Classification Model
+
+
+1) Cleaning, merging datasets:
+
+Loading the datasets.
+
+Wiadomosci:
+```{r}
+wiadomosci <- read.csv('wiadomosci.csv')
+```
+
+```{r}
+library(lubridate)
+wiadomosci$Date <- as_datetime(wiadomosci$Date)
+```
+
+Add a new column TVN and set values in every row to 0
+```{r}
+wiadomosci$tvn <- 0
+```
+
+```{r}
+wiadomosci_lgbt <- subset(wiadomosci, grepl("transpłciow\\w*|lgbt[\\w+]*|gej\\w*|lesbij\\w*|transseksual\\w*|\\btrans\\b|homoseksual\\w*|tęcz\\w*|jednopłciow\\w*|związków partnerskich| związki partnerskie|anty-LGBT", Texts, ignore.case = TRUE))
+```
+
+```{r}
+wiadomosci_lgbt$pub_time <- wiadomosci_lgbt$Date
+```
+
+
+```{r}
+# Define start and end dates
+start_date <- as.Date("2019-10-13")
+
+# Convert pub_time to Date format
+wiadomosci_lgbt$pub_time <- as.Date(wiadomosci_lgbt$pub_time)
+
+# Calculate day of year starting from start_date
+wiadomosci_lgbt$day_of_year <- as.numeric(wiadomosci_lgbt$pub_time - start_date)
+
+library(dplyr)
+wiadomosci_lgbt <- wiadomosci_lgbt %>%
+  mutate(pub_time = ymd_hms(paste(pub_time, "19:00:00")))
+
+# Define start date
+start_date <- as.POSIXct("2019-10-13 00:00:00", format = "%Y-%m-%d %H:%M:%S")
+
+# Add a new column specifying minutes from the start date for tvn_corpus
+wiadomosci_lgbt$minutes_from_start <- as.numeric(difftime(wiadomosci_lgbt$pub_time, start_date, units = "mins"))
+```
+
+```{r}
+wiadomosci_lgbt$description <- wiadomosci_lgbt$Texts
+```
+
+```{r}
+wiadomosci_lgbt_selected <- select(wiadomosci_lgbt, tvn, description, minutes_from_start, pub_time)
+
+library(dplyr)
+wiadomosci_lgbt_selected <- mutate(wiadomosci_lgbt_selected, network = ifelse(tvn == 1, "TVN", "TVP"))
+```
+
+TVN 2022-2023:
+```{r}
+later_tvn <- read.csv('tvn24.csv')
+```
+
+Converting times to datetime format
+```{r}
+# Define Polish month names dictionary
+polish_months <- c("stycznia" = 1, "lutego" = 2, "marca" = 3, "kwietnia" = 4, "maja" = 5, 
+                   "czerwca" = 6, "lipca" = 7, "sierpnia" = 8, "września" = 9, 
+                   "października" = 10, "listopada" = 11, "grudnia" = 12)
+
+# Function to replace Polish month names with numbers
+replace_polish_months <- function(date_string, month_map) {
+  for (month_name in names(month_map)) {
+    date_string <- gsub(month_name, month_map[[month_name]], date_string)
+  }
+  return(date_string)
+}
+
+# Apply the function to the 'Times' column
+later_tvn$Times <- sapply(later_tvn$Times, replace_polish_months, month_map = polish_months)
+```
+
+```{r}
+later_tvn$Times <- dmy_hm(later_tvn$Times)
+
+old_format <- "%d %b %Y, %H:%M"
+
+# Convert the string to a POSIXct object (datetime format)
+datetime_format <- mdy_hm(text = "15 12 2022, 13:56", old_format)
+```
+
+```{r}
+later_tvn$tvn <- 1
+```
+
+```{r}
+# Define start and end dates
+start_date <- as.Date("2019-10-13")
+
+# Convert pub_time to Date format
+later_tvn$pub_time <- as.Date(later_tvn$Times)
+
+# Calculate day of year starting from start_date
+later_tvn$day_of_year <- as.numeric(later_tvn$pub_time - start_date)
+
+# Define start date
+start_date <- as.POSIXct("2019-10-13 00:00:00", format = "%Y-%m-%d %H:%M:%S")
+
+# Add a new column specifying minutes from the start date for tvn_corpus
+later_tvn$minutes_from_start <- as.numeric(difftime(later_tvn$pub_time, start_date, units = "mins"))
+```
+
+```{r}
+later_tvn$description <- later_tvn$Texts
+```
+
+```{r}
+later_tvn_selected <- select(later_tvn, tvn, description, minutes_from_start, pub_time)
+
+library(dplyr)
+later_tvn_selected <- mutate(later_tvn_selected, network = ifelse(tvn == 1, "TVN", "TVP"))
+```
+
+From ‘Creation of Polish Online News Corpus for Political Polarisation Studies’ (Szwoch et al., 2022)
+
+TVN:
+```{r}
+tvn_corpus <- read.csv('data_frame_tvn_new.csv')
+```
+
+TVP:
+```{r}
+tvp_corpus <- read.csv('data_frame_tvp_new.csv')
+```
+
+Select website categories
+```{r}
+table(tvn_corpus$website_category)
+tvn_corpus <- subset(tvn_corpus, website_category %in% c("Polska", "Świat", "Warszawa", "Konkret 24 Polska", "Konkret 24 Polityka", "Konkret 24 Świat"))
+```
+
+```{r}
+table(tvp_corpus$website_category)
+tvp_corpus <- subset(tvp_corpus, website_category %in% c("Kultura", "Polska", "Rozmaitości", "Społeczeństwo", "Świat"))
+```
+
+Convert time to the right format
+```{r}
+library(dplyr)
+library(lubridate)
+
+tvn_corpus$pub_time <- as_datetime(tvn_corpus$pub_time)
+tvn_corpus <- tvn_corpus %>%
+  filter(pub_time >= as_datetime("2019-10-13") & pub_time <= as_datetime("2022-02-06"))
+
+tvp_corpus$pub_time <- as_datetime(tvp_corpus$pub_time)
+tvp_corpus <- tvp_corpus %>%
+  filter(pub_time >= as_datetime("2019-10-13") & pub_time <= as_datetime("2022-02-06"))
+
+
+# Define start and end dates
+start_date <- as.Date("2019-10-13")
+end_date <- as.Date("2022-02-06")
+
+# Convert pub_time to Date format
+tvn_corpus$pub_time <- as.Date(tvn_corpus$pub_time)
+
+# Calculate day of year starting from start_date
+tvn_corpus$day_of_year <- as.numeric(tvn_corpus$pub_time - start_date)
+
+# Filter out dates beyond end_date
+tvn_corpus$day_of_year[tvn_corpus$pub_time > end_date] <- NA
+
+# Convert pub_time to Date format
+tvp_corpus$pub_time <- as.Date(tvp_corpus$pub_time)
+
+# Calculate day of year starting from start_date
+tvp_corpus$day_of_year <- as.numeric(tvp_corpus$pub_time - start_date)
+
+# Filter out dates beyond end_date
+tvp_corpus$day_of_year[tvp_corpus$pub_time > end_date] <- NA
+
+# Define start date
+start_date <- as.POSIXct("2019-10-13 00:00:00", format = "%Y-%m-%d %H:%M:%S")
+
+# Add a new column specifying minutes from the start date for tvn_corpus
+tvn_corpus$minutes_from_start <- as.numeric(difftime(tvn_corpus$pub_time, start_date, units = "mins"))
+
+# Add a new column specifying minutes from the start date for tvp_corpus
+tvp_corpus$minutes_from_start <- as.numeric(difftime(tvp_corpus$pub_time, start_date, units = "mins"))
+```
+
+```{r}
+tvn <- select(tvn_corpus, tvn, description, minutes_from_start, pub_time)
+tvp <- select(tvp_corpus, tvn, description, minutes_from_start, pub_time)
+
+tvn_tvp <- rbind(tvn, tvp)
+
+# Shuffle the rows
+tvn_tvp <- tvn_tvp[sample(nrow(tvn_tvp)), ]
+
+library(dplyr)
+
+tvn_tvp <- mutate(tvn_tvp, network = ifelse(tvn == 1, "TVN", "TVP"))
+```
+
+```{r}
+lgbtq_coverages_select <- subset(tvn_tvp, grepl("transpłciow\\w*|lgbt[\\w+]*|gej\\w*|lesbij\\w*|transseksual\\w*|\\btrans\\b|homoseksual\\w*|tęcz\\w*|jednopłciow\\w*|związków partnerskich| związki partnerskie|anty-LGBT", description, ignore.case = TRUE))
+
+lgbtq_coverages <- rbind(lgbtq_coverages_select, wiadomosci_lgbt_selected, later_tvn_selected)
+
+lgbtq_coverages$network <- factor(lgbtq_coverages$network)
+lgbtq_coverages$network <- factor(lgbtq_coverages$network, levels = c("TVP", "TVN"))
+```
+
+```{r}
+write.csv(lgbtq_coverages, "lgbtq_coverages.csv")
+```
+
+Pre-processing
+```{r}
+library(quanteda)
+library(quanteda.textmodels)
+library(quanteda.textplots)
+library(quanteda.textstats)
+
+stopwordsPL <- readLines("polish.stopwords.txt", encoding = "UTF-8")
+
+lgbtq_coverages$description <- gsub('@[0-9_A-Za-z]+', '@', lgbtq_coverages$description)
+tvcorpus <- corpus(lgbtq_coverages$description)
+tokens <- tokens(tvcorpus, remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, remove_url = TRUE)
+tok <- tokens_remove(tokens, pattern = c("faktach", "playerze", "i_świat", "w_kropce", "kropce", "czarno", "kropce_nad", "nad_i", "magazynu_polska", "materiał_magazynu", "na_ukrainie", "wojska", "mld", "wydanie", "rosją", "główne_wydanie", "wydanie_wiadomości", "z_rosją", "za_chwilę", "dobry_wieczór", "zobacz", "czytaj", "zobacz_też", "tvn24_go", "czytaj_też", "o_moim", "jacoń", "tvn24_pl", "materiał_magazynu", "magazynu_polska"))
+toks <- tokens_ngrams(tok, n = 1:2)
+twdfm <- dfm(toks, remove_url=TRUE, verbose=TRUE)
+
+# Identify most frequent words
+top_words <- names(sort(colSums(twdfm), decreasing = TRUE))[1:10]
+
+# Remove top words
+twdfm <- dfm_remove(twdfm, pattern = top_words)
+
+# Remove stopwords
+twdfm <- dfm_remove(twdfm, pattern = stopwordsPL)
+```
+
+
+```{r}
+#Grouping the dfm by tv station
+dfm_grouped <- dfm_group(twdfm, group = lgbtq_coverages$network)
+dfm_weighted <- dfm_weight(dfm_grouped, scheme = 'prop')
+```
+
+2) Descriptive statistics
+
+```{r}
+library(quanteda)
+dfm_tfidf <- dfm_tfidf(dfm_grouped)
+
+for (doc_name in rownames(dfm_tfidf)) {
+  #Getting the TF-IDF scores for the current document (candidate)
+  doc_tfidf <- dfm_tfidf[doc_name, ]
+  
+  #Getting the top 10 words for the current document
+  top_words <- topfeatures(doc_tfidf, 10)
+  
+  #Printing the name of the document (candidate)
+  cat("Top 10 words for", doc_name, ":\n")
+  
+  #Printing the top 10 words for the current document
+  print(top_words)
+  cat("\n")
+}
+```
+
+```{r}
+library(Cairo)
+CairoPNG("wordcloud_plot.png", width = 1200, height = 800, res = 300)
+
+colors <- c("#377EB8", "#FF7F00")
+names <- c("TVP", "TVN")
+
+par(font = 2)
+
+# Plot the word cloud without saving first to add legend and title
+par(mar = c(5, 5, 2, 5))  # Adjust margins for better layout
+
+# Plot the word cloud
+textplot_wordcloud(dfm_grouped, 
+                   rotation = 0, 
+                   min_size = 0.3, 
+                   max_size = 2, 
+                   comparison = TRUE,
+                   color = colors)
+
+# Add legend on the right
+legend("right", legend = names, fill = colors, title = "TV Station", cex = 0.8, bty = "n")
+
+# Add title slightly lower
+title(main = "Comparison of Frequency of Words Between TV Stations", cex.main = 1.2, line = -0.5)
+
+dev.off()
+```
+
+Plot the amount of articles per month
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+
+# Convert pub_time to Date format (already done in sample data)
+lgbtq_coverages$pub_time <- as.Date(lgbtq_coverages$pub_time)
+
+# Extract month and year
+data <- lgbtq_coverages %>%
+  mutate(month_year = floor_date(pub_time, "month"))
+
+# Group by month_year and network, then count the number of articles
+monthly_counts <- data %>%
+  group_by(month_year, network) %>%
+  summarise(article_count = n()) %>%
+  ungroup()
+
+network_colors <- c("#377EB8", "#FF7F00")
+
+# Plot the data
+ggplot(monthly_counts, aes(x = month_year, y = article_count, color = network, group = network)) +
+  geom_line(size=1.5) +
+  geom_point() +
+  labs(title = "Number of Articles per Month by TV Station",
+       x = "Time",
+       y = "Number of Articles",
+       color = "TV Station") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +  # more frequent date labels
+  scale_y_continuous(limits = c(0, NA)) +  # set y-axis limits to start from 0
+  scale_color_manual(values = network_colors) +  # custom network colors
+  theme_minimal() +  # minimal theme
+  theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5),  # title style
+        axis.title = element_text(size = 14, face = "bold"),  # axis title style
+        axis.text = element_text(size = 12, face = "bold"),  # axis text size
+        legend.title = element_text(face = "bold", size = 12),  # legend title style
+        legend.text = element_text(size = 11, face="bold"),  # legend text size
+       # axis.line.x = element_line(color = "lightgrey"),  # x-axis line color
+        axis.ticks.x = element_line(color = "lightgrey", size = 0.5))  # ticks on x-axis
+```
+
+TABLE for appendix
+```{r}
+library(tidyr)
+
+monthly_counts <- monthly_counts %>%
+  mutate(month_year = format(month_year, "%Y-%m"))
+
+# Convert the data to a wide format table
+monthly_counts_wide <- monthly_counts %>%
+  pivot_wider(names_from = network, values_from = article_count, values_fill = list(article_count = 0))
+
+# Display the table
+print(monthly_counts_wide)
+
+write.csv(monthly_counts_wide, "monthly_counts_wide.csv", row.names = FALSE)
+```
+
+```{r}
+averages <- monthly_counts_wide %>%
+  summarize(
+    Avg_TVP = mean(TVP, na.rm = TRUE),
+    Avg_TVN = mean(TVN, na.rm = TRUE)
+  )
+
+averages
+```
+
+3) Cosine Similarity
+
+Aggregate all TVP and TVN articles to compare the TVs coverage in general. 
+```{r}
+library(quanteda)
+library(quanteda.textstats)
+
+stopwordsPL <- readLines("polish.stopwords.txt", encoding = "UTF-8")
+
+# Filter and concatenate articles based on the network
+tvp_all <- paste(lgbtq_coverages$description[lgbtq_coverages$network == "TVP"], collapse = " ")
+tvn_all <- paste(lgbtq_coverages$description[lgbtq_coverages$network == "TVN"], collapse = " ")
+
+tvp_all_corpus <- corpus(tvp_all)
+tvp_all_dfm <- tvp_all_corpus %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE,
+         remove_url = TRUE) %>%
+  tokens_ngrams(n = 1:2) %>%
+  dfm() %>%
+  dfm_remove(pattern = stopwordsPL) 
+
+tvn_all_corpus <- corpus(tvn_all)
+tvn_all_dfm <- tvn_all_corpus %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE,
+         remove_url = TRUE) %>%
+  tokens_ngrams(n = 1:2) %>%
+  dfm() %>%
+  dfm_remove(pattern = stopwordsPL) 
+```
+
+```{r}
+docs <- c(tvp_all, tvn_all)
+(doc_dfm <- dfm(docs))
+
+textstat_simil(doc_dfm, method="cosine")
+```
+
+Separate by years to find out similarity scores throughout years
+```{r}
+library(quanteda)
+library(quanteda.textstats)
+library(dplyr)
+library(lubridate)
+
+stopwordsPL <- readLines("polish.stopwords.txt", encoding = "UTF-8")
+
+# Ensure pub_time column is in Date format
+lgbtq_coverages$pub_time <- as.Date(lgbtq_coverages$pub_time)
+
+# Filter articles from 2020
+lgbtq_2020 <- lgbtq_coverages %>% filter(year(pub_time) == 2020)
+
+# Filter and concatenate articles based on the network
+tvp_all_2020 <- paste(lgbtq_2020$description[lgbtq_2020$network == "TVP"], collapse = " ")
+tvn_all_2020 <- paste(lgbtq_2020$description[lgbtq_2020$network == "TVN"], collapse = " ")
+
+tvp_all_corpus <- corpus(tvp_all_2020)
+tvp_all_dfm <- tvp_all_corpus %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE,
+         remove_url = TRUE) %>%
+  tokens_ngrams(n = 1:2) %>%
+  dfm() %>%
+  dfm_remove(pattern = stopwordsPL) 
+
+tvn_all_corpus <- corpus(tvn_all_2020)
+tvn_all_dfm <- tvn_all_corpus %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE,
+         remove_url = TRUE) %>%
+  tokens_ngrams(n = 1:2) %>%
+  dfm() %>%
+  dfm_remove(pattern = stopwordsPL) 
+```
+
+```{r}
+docs <- c(tvp_all_2020, tvn_all_2020)
+(doc_dfm <- dfm(docs))
+
+textstat_simil(doc_dfm, method="cosine")
+```
+
+```{r}
+library(quanteda)
+library(quanteda.textstats)
+library(dplyr)
+library(lubridate)
+
+stopwordsPL <- readLines("polish.stopwords.txt", encoding = "UTF-8")
+
+# Ensure pub_time column is in Date format
+lgbtq_coverages$pub_time <- as.Date(lgbtq_coverages$pub_time)
+
+# Filter articles from 2021
+lgbtq_2021 <- lgbtq_coverages %>% filter(year(pub_time) == 2021)
+
+# Filter and concatenate articles based on the network
+tvp_all_2021 <- paste(lgbtq_2021$description[lgbtq_2021$network == "TVP"], collapse = " ")
+tvn_all_2021 <- paste(lgbtq_2021$description[lgbtq_2021$network == "TVN"], collapse = " ")
+
+tvp_all_corpus <- corpus(tvp_all_2021)
+tvp_all_dfm <- tvp_all_corpus %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE,
+         remove_url = TRUE) %>%
+  tokens_ngrams(n = 1:2) %>%
+  dfm() %>%
+  dfm_remove(pattern = stopwordsPL) 
+
+tvn_all_corpus <- corpus(tvn_all_2021)
+tvn_all_dfm <- tvn_all_corpus %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE,
+         remove_url = TRUE) %>%
+  tokens_ngrams(n = 1:2) %>%
+  dfm() %>%
+  dfm_remove(pattern = stopwordsPL) 
+
+docs <- c(tvp_all_2021, tvn_all_2021)
+(doc_dfm <- dfm(docs))
+
+textstat_simil(doc_dfm, method="cosine")
+```
+
+```{r}
+library(quanteda)
+library(quanteda.textstats)
+library(dplyr)
+library(lubridate)
+
+stopwordsPL <- readLines("polish.stopwords.txt", encoding = "UTF-8")
+
+# Ensure pub_time column is in Date format
+lgbtq_coverages$pub_time <- as.Date(lgbtq_coverages$pub_time)
+
+# Filter articles from 2022
+lgbtq_2022 <- lgbtq_coverages %>% filter(year(pub_time) == 2022)
+
+# Filter and concatenate articles based on the network
+tvp_all_2022 <- paste(lgbtq_2022$description[lgbtq_2022$network == "TVP"], collapse = " ")
+tvn_all_2022 <- paste(lgbtq_2022$description[lgbtq_2022$network == "TVN"], collapse = " ")
+
+tvp_all_corpus <- corpus(tvp_all_2022)
+tvp_all_dfm <- tvp_all_corpus %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE,
+         remove_url = TRUE) %>%
+  tokens_ngrams(n = 1:2) %>%
+  dfm() %>%
+  dfm_remove(pattern = stopwordsPL) 
+
+tvn_all_corpus <- corpus(tvn_all_2022)
+tvn_all_dfm <- tvn_all_corpus %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE,
+         remove_url = TRUE) %>%
+  tokens_ngrams(n = 1:2) %>%
+  dfm() %>%
+  dfm_remove(pattern = stopwordsPL) 
+
+docs <- c(tvp_all_2022, tvn_all_2022)
+(doc_dfm <- dfm(docs))
+
+textstat_simil(doc_dfm, method="cosine")
+```
+
+```{r}
+library(quanteda)
+library(quanteda.textstats)
+library(dplyr)
+library(lubridate)
+
+stopwordsPL <- readLines("polish.stopwords.txt", encoding = "UTF-8")
+
+# Ensure pub_time column is in Date format
+lgbtq_coverages$pub_time <- as.Date(lgbtq_coverages$pub_time)
+
+# Filter articles from 2023
+lgbtq_2023 <- lgbtq_coverages %>% filter(year(pub_time) == 2023)
+
+# Filter and concatenate articles based on the network
+tvp_all_2023 <- paste(lgbtq_2023$description[lgbtq_2023$network == "TVP"], collapse = " ")
+tvn_all_2023 <- paste(lgbtq_2023$description[lgbtq_2023$network == "TVN"], collapse = " ")
+
+tvp_all_corpus <- corpus(tvp_all_2023)
+tvp_all_dfm <- tvp_all_corpus %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE,
+         remove_url = TRUE) %>%
+  tokens_ngrams(n = 1:2) %>%
+  dfm() %>%
+  dfm_remove(pattern = stopwordsPL) 
+
+tvn_all_corpus <- corpus(tvn_all_2023)
+tvn_all_dfm <- tvn_all_corpus %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE,
+         remove_url = TRUE) %>%
+  tokens_ngrams(n = 1:2) %>%
+  dfm() %>%
+  dfm_remove(pattern = stopwordsPL) 
+
+docs <- c(tvp_all_2023, tvn_all_2023)
+(doc_dfm <- dfm(docs))
+
+textstat_simil(doc_dfm, method="cosine")
+```
+
+4) Word2vec
+
+Separating  TVP and TVN to get different contexts and explore potential bias
+
+```{r}
+# Example subsetting based on some criteria
+tvp_data <- lgbtq_coverages %>% filter(network == "TVP")
+tvn_data <- lgbtq_coverages %>% filter(network == "TVN")
+```
+
+```{r}
+library(quanteda)
+library(quanteda.textmodels)
+library(quanteda.textplots)
+library(quanteda.textstats)
+
+stopwordsPL <- readLines("polish.stopwords.txt", encoding = "UTF-8")
+
+tvp_data$description <- gsub('@[0-9_A-Za-z]+', '@', tvp_data$description)
+tvcorpus_tvp <- corpus(tvp_data$description)
+tokens_tvp <- tokens(tvcorpus_tvp, remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, remove_url = TRUE)
+tok_tvp <- tokens_remove(tokens_tvp, pattern = c("faktach", "playerze", "i_świat", "w_kropce", "kropce", "czarno", "kropce_nad", "nad_i", "magazynu_polska", "materiał_magazynu"))
+toks_tvp <- tokens_ngrams(tok_tvp, n = 1:2)
+
+tvn_data$description <- gsub('@[0-9_A-Za-z]+', '@', tvn_data$description)
+tvcorpus_tvn <- corpus(tvn_data$description)
+tokens_tvn <- tokens(tvcorpus_tvn, remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, remove_url = TRUE)
+tok_tvn <- tokens_remove(tokens_tvn, pattern = c("faktach", "playerze", "i_świat", "w_kropce", "kropce", "czarno", "kropce_nad", "nad_i", "magazynu_polska", "materiał_magazynu"))
+toks_tvn <- tokens_ngrams(tok_tvn, n = 1:2)
+```
+
+```{r}
+library(tm)
+
+#TVP
+dtm_tvp <- DocumentTermMatrix(tvcorpus_tvp) 
+
+# Get the words 
+words_tvp <- colnames(as.matrix(dtm_tvp)) 
+  
+# Create a list of words 
+word_list_tvp <- strsplit(words_tvp, " ") 
+word_list_tvp <- unlist(word_list_tvp) 
+  
+# Remove empty strings 
+word_list_tvp <- word_list_tvp[word_list_tvp != ""] 
+
+#TVN
+dtm_tvn <- DocumentTermMatrix(tvcorpus_tvn) 
+
+# Get the words 
+words_tvn <- colnames(as.matrix(dtm_tvn)) 
+  
+# Create a list of words 
+word_list_tvn <- strsplit(words_tvn, " ") 
+word_list_tvn <- unlist(word_list_tvn) 
+  
+# Remove empty strings 
+word_list_tvn <- word_list_tvn[word_list_tvn != ""] 
+```
+
+```{r}
+# Convert tokens object to a list of character vectors
+
+#TVP
+token_list_tvp <- as.list(toks_tvp)
+token_list_tvp <- lapply(token_list_tvp, as.character)
+
+#TVN
+token_list_tvn <- as.list(toks_tvn)
+token_list_tvn <- lapply(token_list_tvn, as.character)
+```
+
+```{r}
+library(word2vec)
+
+#TVP
+# Flatten the list of tokenized texts into a single list of tokens
+flattened_tokens_tvp <- unlist(token_list_tvp, recursive = FALSE)
+
+# Train the Word2Vec model
+vec_model_tvp <- word2vec(x = flattened_tokens_tvp, type = "skip-gram", dim = 100, iter = 5)
+#cbow predicts the target word based on the context words
+#skip-gram predicts the context words based on the target word
+
+#TVN
+# Flatten the list of tokenized texts into a single list of tokens
+flattened_tokens_tvn <- unlist(token_list_tvn, recursive = FALSE)
+
+# Train the Word2Vec model
+vec_model_tvn <- word2vec(x = flattened_tokens_tvn, type = "skip-gram", dim = 100, iter = 5)
+```
+
+```{r}
+#TVP
+# Save the model
+write.word2vec(vec_model_tvp, file = "word2vec_model_tvp.bin")
+
+# Load the model
+vec_model_tvp <- read.word2vec(file = "word2vec_model_tvp.bin")
+
+#TVN
+# Save the model
+write.word2vec(vec_model_tvn, file = "word2vec_model_tvn.bin")
+
+# Load the model
+vec_model_tvn <- read.word2vec(file = "word2vec_model_tvn.bin")
+```
+
+```{r}
+library(word2vec)
+# Find similar words
+synonyms_tvp <- predict(vec_model_tvp, c("LGBT"), type = "nearest", top_n = 10)
+synonyms_tvn <- predict(vec_model_tvn, c("LGBT"), type = "nearest", top_n = 10)
+print(synonyms_tvp)
+print(synonyms_tvn)
+```
+
+```{r}
+library(word2vec)
+# Find similar words
+synonyms_tvp <- predict(vec_model_tvp, c("prawa"), type = "nearest", top_n = 10)
+synonyms_tvn <- predict(vec_model_tvn, c("prawa"), type = "nearest", top_n = 10)
+print(synonyms_tvp)
+print(synonyms_tvn)
+```
+
+Visualisation based on https://www.geeksforgeeks.org/word2vec-using-r/
+```{r}
+library(ggplot2) 
+library(ggrepel) 
+library(plotly) 
+library(umap) 
+
+skip_gram_model_tvp = word2vec(x = flattened_tokens_tvp, type = "skip-gram", dim = 15, iter = 20)
+
+# checking embeddings 
+skip_embedding_tvp <- as.matrix(skip_gram_model_tvp) 
+skip_embedding_tvp <- predict(skip_gram_model_tvp, word_list_tvp, type = "embedding") 
+skip_embedding_tvp <- na.omit(skip_gram_model_tvp) 
+
+skip_embedding_tvp_matrix <- as.matrix(skip_embedding_tvp)
+
+lgbt_regex <- "transpłciow\\w*|lgbt[\\w+]*|gej\\w*|lesbij\\w*|transseksual\\w*|\\btrans\\b|homoseksual\\w*|tęcz\\w*|jednopłciow\\w*|związków partnerskich|związki partnerskie|anty-LGBT"
+
+# Define additional phrases of interest
+phrases_of_interest <- c("Kaczyński", "osoby", "lgbt", "społeczności", "pro-life", "prawa", 
+                         "trzaskowski", "środowisk", "anty-lgbt", "ideologii", "aktywisty", 
+                         "sąd", "dzieci", "edukacji", "szkół", "lgbtq", "adopcji", "pary", 
+                         "przyjaznych", "szkole", "Czarnek", "rodziców", "szkołach", "tusk", 
+                         "coming", "gejem", "gej", "marsz", "równości", "organizatorzy", 
+                         "uczestnicy", "związków", "partnerskich", "samej", "płci", 
+                         "jednopłciowych", "małżeństwa", "strefy", "wolnych")
+
+# Combine regex and phrases into a single logical vector for filtering
+relevant_indices <- which(grepl(lgbt_regex, rownames(skip_embedding_tvp_matrix), ignore.case = TRUE) | 
+                          rownames(skip_embedding_tvp_matrix) %in% phrases_of_interest)
+
+# Filter the embedding matrix to include only relevant words
+skip_embedding_tvp_relevant <- skip_embedding_tvp_matrix[relevant_indices, ]
+
+# Step 1: Reduce dimensionality with PCA on the relevant subset
+pca_result_tvp <- prcomp(skip_embedding_tvp_relevant, rank. = 50)
+
+vizualization_tvp <- umap(pca_result_tvp$x, n_neighbors = 15, n_threads = parallel::detectCores() - 1)
+
+# Prepare data for visualization
+df_tvp <- data.frame(
+  word = rownames(skip_embedding_tvp_relevant),
+  x = vizualization_tvp$layout[, 1],
+  y = vizualization_tvp$layout[, 2],
+  stringsAsFactors = FALSE
+)
+
+# Plot the UMAP results
+plot_ly(df_tvp, x = ~x, y = ~y, type = "scatter", mode = 'text', text = ~word) %>%
+  layout(title = "TVP Skip Gram Embeddings Visualization")
+```
+
+```{r}
+skip_gram_model_tvn = word2vec(x = flattened_tokens_tvn, type = "skip-gram", dim = 15, iter = 20)
+
+# checking embeddings 
+skip_embedding_tvn <- as.matrix(skip_gram_model_tvn) 
+skip_embedding_tvn <- predict(skip_gram_model_tvn, word_list_tvn, type = "embedding") 
+skip_embedding_tvn <- na.omit(skip_gram_model_tvn) 
+
+skip_embedding_tvn_matrix <- as.matrix(skip_embedding_tvn)
+
+# Combine regex and phrases into a single logical vector for filtering
+relevant_indices <- which(grepl(lgbt_regex, rownames(skip_embedding_tvn_matrix), ignore.case = TRUE) | 
+                          rownames(skip_embedding_tvn_matrix) %in% phrases_of_interest)
+
+# Filter the embedding matrix to include only relevant words
+skip_embedding_tvn_relevant <- skip_embedding_tvn_matrix[relevant_indices, ]
+
+# Step 1: Reduce dimensionality with PCA on the relevant subset
+pca_result_tvn <- prcomp(skip_embedding_tvn_relevant, rank. = 50)
+
+vizualization_tvn <- umap(pca_result_tvn$x, n_neighbors = 15, n_threads = parallel::detectCores() - 1)
+
+# Prepare data for visualization
+df_tvn <- data.frame(
+  word = rownames(skip_embedding_tvn_relevant),
+  x = vizualization_tvn$layout[, 1],
+  y = vizualization_tvn$layout[, 2],
+  stringsAsFactors = FALSE
+)
+
+# Plot the UMAP results
+plot_ly(df_tvn, x = ~x, y = ~y, type = "scatter", mode = 'text', text = ~word) %>%
+  layout(title = "TVN Skip Gram Embeddings Visualization")
+```
+
+
+Over time
+
+TVP
+```{r}
+# Example: Split data into yearly subsets
+tvp_data$year <- format(tvp_data$pub_time, "%Y")
+tvp_data <- tvp_data[!is.na(tvp_data$year), ]
+unique_years_tvp <- unique(tvp_data$year)
+
+# Create a list to hold data for each year
+yearly_data_tvp <- split(tvp_data, tvp_data$year)
+```
+
+```{r}
+library(word2vec)
+library(quanteda)
+
+stopwordsPL <- readLines("polish.stopwords.txt", encoding = "UTF-8")
+
+# Function to train Word2Vec model for a given dataset
+train_word2vec_model <- function(data) {
+  tvcorpus <- corpus(data$description)
+  tokens <- tokens(tvcorpus, remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, remove_url = TRUE)
+  tok <- tokens_remove(tokens, pattern = c("faktach", "playerze", "i_świat", "w_kropce", "kropce", "czarno", "kropce_nad", "nad_i", "magazynu_polska", "materiał_magazynu"))
+  tok <- tokens_remove(tokens, pattern = stopwordsPL)
+  toks <- tokens_wordstem(tok)
+  flattened_tokens <- unlist(toks, recursive = FALSE)
+  
+  # Train the Word2Vec model
+  word2vec(x = flattened_tokens, type = "skip-gram", dim = 15, iter = 20)
+}
+
+# Train models for each year
+word2vec_models_tvp <- lapply(yearly_data_tvp, train_word2vec_model)
+names(word2vec_models_tvp) <- unique_years_tvp
+```
+
+```{r}
+# Function to get nearest neighbors for a given term from a model
+get_nearest_neighbors <- function(model, term) {
+  predict(model, term, type = "nearest", top_n = 20)
+}
+
+# Get nearest neighbors for "LGBT" from each model
+nearest_neighbors_over_time_tvp <- lapply(word2vec_models_tvp, get_nearest_neighbors, term = "LGBT")
+names(nearest_neighbors_over_time_tvp) <- unique_years_tvp
+```
+
+TVN
+```{r}
+# Example: Split data into yearly subsets
+tvn_data$year <- format(tvn_data$pub_time, "%Y")
+
+tvn_data <- tvn_data[!is.na(tvn_data$year), ]
+unique_years_tvn <- unique(tvn_data$year)
+
+# Create a list to hold data for each year
+yearly_data_tvn <- split(tvn_data, tvn_data$year)
+```
+
+```{r}
+library(word2vec)
+library(quanteda)
+
+# Train models for each year
+word2vec_models_tvn <- lapply(yearly_data_tvn, train_word2vec_model)
+names(word2vec_models_tvn) <- unique_years_tvn
+```
+
+```{r}
+# Get nearest neighbors for "LGBT" from each model
+nearest_neighbors_over_time_tvn <- lapply(word2vec_models_tvn, get_nearest_neighbors, term = "LGBT")
+names(nearest_neighbors_over_time_tvn) <- unique_years_tvn
+```
+
+Results for both TVP and TVN
+```{r}
+for (year in unique_years_tvn) {
+  cat("Year:", year, "\n")
+  cat("TVP", "\n")
+  print(nearest_neighbors_over_time_tvp[[year]])
+  cat("TVN", "\n")
+  print(nearest_neighbors_over_time_tvn[[year]])
+  cat("\n")
+}
+```
+
+5) Structural Topic Model
+
+```{r}
+#install.packages("stm")
+
+library("quanteda")
+library("stm")
+library("tidyverse")
+library("stringi")
+library("lubridate")
+```
+
+```{r}
+# Remove rows with NA values in the minutes_from_start column
+lgbtq_coverages <- lgbtq_coverages[!is.na(lgbtq_coverages$minutes_from_start), ]
+```
+
+```{r}
+#Corpus for STModel
+tv_corpus <- corpus(lgbtq_coverages$description,
+                    docvars = lgbtq_coverages[, c("network", "minutes_from_start")])
+```
+
+```{r}
+stopwordsPL <- readLines("polish.stopwords.txt", encoding = "UTF-8")
+
+tv_dfm <- tv_corpus %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE,
+         remove_url = TRUE) %>%
+  tokens_remove(pattern = c("faktach", "związku", "ciągu", "twitterze", "tvn24", "ws", "sprawie")) %>%
+  tokens_ngrams(n = 1:2) %>%
+  dfm() %>%
+  dfm_trim(min_termfreq = 5) %>%
+  dfm_remove(pattern = stopwordsPL) 
+  
+tv_dfm
+```
+
+```{r}
+stm_input <- convert(tv_dfm, to = "stm")
+```
+
+```{r}
+library(stm)
+
+stmodel <- stm(documents = stm_input$documents, vocab = stm_input$vocab,
+                     K = 20, prevalence =~ network + s(minutes_from_start),
+               data = stm_input$meta, verbose = FALSE, init.type = "Spectral")
+```
+
+```{r, fig.height = 10, fig.width = 7}
+set.seed(123)
+par(cex = 0.8)  # Adjust font size to 0.8 (change this value as needed)
+
+# Plot the STM model with adjusted font size
+plot(stmodel, n = 5)
+```
+
+```{r}
+library(stm)
+cloud(stmodel, topic = 10, scale = c(2,.25))
+cloud(stmodel, topic = 2, scale = c(2,.25))
+```
+
+```{r}
+# 1:50 refers to topic 1-50
+effect_estimates <- estimateEffect(1:20 ~ network + s(minutes_from_start), stmodel, meta = stm_input$meta)
+```
+
+
+```{r}
+plot(effect_estimates, covariate = "network", topics = c(10, 17, 11, 6, 14),
+     model = stmodel, method = "difference",
+     cov.value1 = "TVN", cov.value2 = "TVP",
+     xlab = "More TVP ... More TVN", 
+     main = "Main Themes: TVP and TVN",
+     xlim = c(-.14, .14), labeltype = "custom", 
+     custom.labels = c("Negative", "Relationship formalisation", "Legal proceedings", "Equality march", "Children"),
+     font.main = 2,      # Bold main title
+     font.lab = 2,       # Bold axis labels
+     font.axis = 2,      # Bold axis tick labels
+     font.sub = 2,       # Bold subtitle (if applicable)
+     font = 2)           # Bold custom labels
+
+```
+
+Exploring difference in prevalence of topics in. the two TV stations throughout the years
+
+```{r}
+# Define the formula for TVP and TVN separately
+formula_tvp <- formula(effect_estimates$formula, network = "TVP")
+formula_tvn <- formula(effect_estimates$formula, network = "TVN")
+
+# Estimate the effects separately
+effects_tvp <- estimateEffect(formula_tvp, stmodel, meta = stm_input$meta)
+effects_tvn <- estimateEffect(formula_tvn, stmodel, meta = stm_input$meta)
+```
+
+```{r}
+# Plot the effects for TVP
+plot(effects_tvp, covariate = "minutes_from_start", method = "continuous", topics = 17, model = stmodel,
+     printlegend = FALSE, xaxt = "n", xlab = "Time", main = "Relationship formalisation", linecol = "#377EB8", lwd = 3, font.main = 2, font.lab = 2, font.axis = 2, bty = "n")
+
+# Overlay the effects for TVN
+plot(effects_tvn, covariate = "minutes_from_start", method = "continuous", topics = 17, model = stmodel,
+     printlegend = FALSE, xaxt = "n", add = TRUE, linecol = "#FF7F00", lwd = 3, bty = "n")
+
+# Add custom x-axis
+# Define your custom labels and their positions
+start_date <- as.POSIXct("2019-10-01")
+end_date <- as.POSIXct("2023-12-31")
+total_minutes <- as.numeric(difftime(end_date, start_date, units = "mins"))
+
+time_labels <- c("Oct 2019", "Jan 2020", "Jan 2021", "Jan 2022", "Jan 2023", "Dec 2023")
+time_positions <- c(0, 
+                    as.numeric(difftime(as.POSIXct("2020-01-01"), start_date, units = "mins")),
+                    as.numeric(difftime(as.POSIXct("2021-01-01"), start_date, units = "mins")),
+                    as.numeric(difftime(as.POSIXct("2022-01-01"), start_date, units = "mins")),
+                    as.numeric(difftime(as.POSIXct("2023-01-01"), start_date, units = "mins")),
+                    total_minutes)
+
+# Draw light grey grid lines
+abline(v = time_positions, col = "lightgrey", lty = "dotted")
+abline(h = pretty(range(c(effects_tvp$estimate, effects_tvn$estimate))), col = "lightgrey", lty = "dotted")
+
+# Add custom x-axis
+axis(1, at = time_positions, labels = time_labels, font = 2)
+
+# Add a legend without a box
+legend("topright", legend = c("TVP", "TVN"), col = c("#377EB8", "#FF7F00"), lty = 1, lwd = 3, bty = "n", text.font = 2)
+```
+
+```{r}
+# Plot the effects for TVP
+plot(effects_tvp, covariate = "minutes_from_start", method = "continuous", topics = 11, model = stmodel,
+     printlegend = FALSE, xaxt = "n", xlab = "Time", main = "Legal proceedings", linecol = "#377EB8", lwd = 3, font.main = 2, font.lab = 2, font.axis = 2, bty = "n")
+
+# Overlay the effects for TVN
+plot(effects_tvn, covariate = "minutes_from_start", method = "continuous", topics = 11, model = stmodel,
+     printlegend = FALSE, xaxt = "n", add = TRUE, linecol = "#FF7F00", lwd = 3, bty = "n")
+
+# Add custom x-axis
+# Define your custom labels and their positions
+start_date <- as.POSIXct("2019-10-01")
+end_date <- as.POSIXct("2023-12-31")
+total_minutes <- as.numeric(difftime(end_date, start_date, units = "mins"))
+
+time_labels <- c("Oct 2019", "Jan 2020", "Jan 2021", "Jan 2022", "Jan 2023", "Dec 2023")
+time_positions <- c(0, 
+                    as.numeric(difftime(as.POSIXct("2020-01-01"), start_date, units = "mins")),
+                    as.numeric(difftime(as.POSIXct("2021-01-01"), start_date, units = "mins")),
+                    as.numeric(difftime(as.POSIXct("2022-01-01"), start_date, units = "mins")),
+                    as.numeric(difftime(as.POSIXct("2023-01-01"), start_date, units = "mins")),
+                    total_minutes)
+
+# Draw light grey grid lines
+abline(v = time_positions, col = "lightgrey", lty = "dotted")
+abline(h = pretty(range(c(effects_tvp$estimate, effects_tvn$estimate))), col = "lightgrey", lty = "dotted")
+
+# Add custom x-axis
+axis(1, at = time_positions, labels = time_labels, font = 2)
+
+# Add a legend without a box
+legend("topright", legend = c("TVP", "TVN"), col = c("#377EB8", "#FF7F00"), lty = 1, lwd = 3, bty = "n", text.font = 2)
+```
+
+```{r}
+# Plot the effects for TVP
+plot(effects_tvp, covariate = "minutes_from_start", method = "continuous", topics = 6, model = stmodel,
+     printlegend = FALSE, xaxt = "n", xlab = "Time", main = "Equality March", linecol = "#377EB8", lwd = 3, font.main = 2, font.lab = 2, font.axis = 2, bty = "n")
+
+# Overlay the effects for TVN
+plot(effects_tvn, covariate = "minutes_from_start", method = "continuous", topics = 6, model = stmodel,
+     printlegend = FALSE, xaxt = "n", add = TRUE, linecol = "#FF7F00", lwd = 3, bty = "n")
+
+# Add custom x-axis
+# Define your custom labels and their positions
+start_date <- as.POSIXct("2019-10-01")
+end_date <- as.POSIXct("2023-12-31")
+total_minutes <- as.numeric(difftime(end_date, start_date, units = "mins"))
+
+time_labels <- c("Oct 2019", "Jan 2020", "Jan 2021", "Jan 2022", "Jan 2023", "Dec 2023")
+time_positions <- c(0, 
+                    as.numeric(difftime(as.POSIXct("2020-01-01"), start_date, units = "mins")),
+                    as.numeric(difftime(as.POSIXct("2021-01-01"), start_date, units = "mins")),
+                    as.numeric(difftime(as.POSIXct("2022-01-01"), start_date, units = "mins")),
+                    as.numeric(difftime(as.POSIXct("2023-01-01"), start_date, units = "mins")),
+                    total_minutes)
+
+# Draw light grey grid lines
+abline(v = time_positions, col = "lightgrey", lty = "dotted")
+abline(h = pretty(range(c(effects_tvp$estimate, effects_tvn$estimate))), col = "lightgrey", lty = "dotted")
+
+# Add custom x-axis
+axis(1, at = time_positions, labels = time_labels, font = 2)
+
+# Add a legend without a box
+legend("topright", legend = c("TVP", "TVN"), col = c("#377EB8", "#FF7F00"), lty = 1, lwd = 3, bty = "n", text.font = 2)
+```
+
+```{r}
+# Plot the effects for TVP
+plot(effects_tvp, covariate = "minutes_from_start", method = "continuous", topics = 14, model = stmodel,
+     printlegend = FALSE, xaxt = "n", xlab = "Time", main = "Children", linecol = "#377EB8", lwd = 3, font.main = 2, font.lab = 2, font.axis = 2, bty = "n")
+
+# Overlay the effects for TVN
+plot(effects_tvn, covariate = "minutes_from_start", method = "continuous", topics = 14, model = stmodel,
+     printlegend = FALSE, xaxt = "n", add = TRUE, linecol = "#FF7F00", lwd = 3, bty = "n")
+
+# Add custom x-axis
+# Define your custom labels and their positions
+start_date <- as.POSIXct("2019-10-01")
+end_date <- as.POSIXct("2023-12-31")
+total_minutes <- as.numeric(difftime(end_date, start_date, units = "mins"))
+
+time_labels <- c("Oct 2019", "Jan 2020", "Jan 2021", "Jan 2022", "Jan 2023", "Dec 2023")
+time_positions <- c(0, 
+                    as.numeric(difftime(as.POSIXct("2020-01-01"), start_date, units = "mins")),
+                    as.numeric(difftime(as.POSIXct("2021-01-01"), start_date, units = "mins")),
+                    as.numeric(difftime(as.POSIXct("2022-01-01"), start_date, units = "mins")),
+                    as.numeric(difftime(as.POSIXct("2023-01-01"), start_date, units = "mins")),
+                    total_minutes)
+
+# Draw light grey grid lines
+abline(v = time_positions, col = "lightgrey", lty = "dotted")
+abline(h = pretty(range(c(effects_tvp$estimate, effects_tvn$estimate))), col = "lightgrey", lty = "dotted")
+
+# Add custom x-axis
+axis(1, at = time_positions, labels = time_labels, font = 2)
+
+# Add a legend without a box
+legend("topright", legend = c("TVP", "TVN"), col = c("#377EB8", "#FF7F00"), lty = 1, lwd = 3, bty = "n", text.font = 2)
+```
+
+```{r}
+library(stm)
+# Relationship Formalisation
+cloud(stmodel, topic = 17, scale = c(2,.25))
+# Legal Proceedings
+cloud(stmodel, topic = 11, scale = c(2,.25))
+# Equality March
+cloud(stmodel, topic = 6, scale = c(2,.25))
+# Children
+cloud(stmodel, topic = 14, scale = c(2,.25))
+```
+
+```{r}
+stmodel_additional_content_variable <- stm(documents = stm_input$documents,
+                                           vocab = stm_input$vocab, K = 20,
+                                           prevalence = ~ network + s(minutes_from_start),
+                                           content = ~ network,
+                                           data = stm_input$meta,
+                                           verbose = FALSE,
+                                           init.type = "Spectral")
+```
+
+```{r, fig.height = 10, fig.width = 7}
+par(cex = 0.8)  # Adjust font size to 0.8 (change this value as needed)
+
+# Plot the STM model with adjusted font size
+plot(stmodel_additional_content_variable, n = 4)
+```
+
+Rewriting the base plot function to modify colours
+```{r, fig.height = 4, fig.width = 9}
+plot_foo <- function (x, type = c("summary", "labels", "perspectives", "hist"), 
+  n = NULL, topics = NULL, labeltype = c("prob", "frex", "lift", 
+    "score"), frexw = 0.5, main = NULL, xlim = NULL, ylim = NULL, 
+  xlab = NULL, family = "", width = 80, covarlevels = NULL, 
+  plabels = NULL, text.cex = 1, custom.labels = NULL, topic.names = NULL, 
+  ...) 
+{
+  model <- x
+  type <- match.arg(type)
+  contentcov <- length(model$beta$logbeta) != 1
+  if (contentcov & !missing(labeltype)) 
+    stop("Cannot specify label type for content covariate models.")
+  labeltype <- match.arg(labeltype)
+  if (!is.null(custom.labels)) 
+    labeltype <- "custom"
+  if (is.null(n)) 
+    n <- switch(type, summary = 3, labels = 20, perspectives = 25, 
+      hist = 3)
+  if (type != "perspectives" & is.null(topics)) 
+    topics <- 1:model$settings$dim$K
+  if (labeltype != "custom") {
+    if (type != "perspectives") {
+      lab <- labelTopics(model, topics = topics, n = n, 
+        frexweight = frexw)
+      if (contentcov) {
+        lab <- lab$topics
+      }
+      else {
+        lab <- lab[[labeltype]]
+      }
+    }
+  }
+  else {
+    lab <- custom.labels
+    if (length(lab) != length(topics)) 
+      lab <- rep_len(lab, length.out = length(topics))
+  }
+  if (!is.null(topic.names)) 
+    topic.names <- rep_len(topic.names, length.out = length(topics))
+  if (type == "summary") {
+    if (labeltype != "custom") {
+      lab <- apply(lab, 1, commas)
+      if (!contentcov) 
+        lab <- lab[topics]
+    }
+    if (is.null(topic.names)) {
+      topic.names <- sprintf("Topic %i:", topics)
+    }
+    lab <- sprintf("%s %s", topic.names, lab)
+    frequency <- colMeans(model$theta[, topics])
+    invrank <- order(frequency, decreasing = FALSE)
+    if (is.null(xlim)) 
+      xlim <- c(0, min(2 * max(frequency), 1))
+    if (is.null(ylim)) 
+      ylim <- c(0, length(topics))
+    if (is.null(main)) 
+      main <- "Top Topics"
+    if (is.null(xlab)) 
+      xlab <- "Expected Topic Proportions"
+    ylab <- ""
+    plot(c(0, 0), type = "n", xlim = xlim, ylim = ylim, 
+      main = main, yaxt = "n", ylab = ylab, xlab = xlab, 
+      ...)
+    for (i in 1:length(invrank)) {
+      lines(c(0, frequency[invrank[i]]), c(i, i))
+      text(frequency[invrank[i]] + min(2 * max(frequency), 
+        1)/100, i, lab[invrank[i]], family = family, 
+        pos = 4, cex = text.cex)
+    }
+  }
+  if (type == "labels") {
+    if (contentcov) {
+      weights <- model$settings$covariates$betaindex
+      tab <- table(weights)
+      weights <- tab/sum(tab)
+      beta <- exp(model$beta$logbeta[[1]]) * weights[1]
+      for (i in 2:length(model$beta$logbeta)) {
+        beta <- beta + exp(model$beta$logbeta[[i]]) * 
+          weights[i]
+      }
+      lab <- t(apply(beta, 1, function(x) model$vocab[order(x, 
+        decreasing = TRUE)[1:n]]))
+    }
+    plot(c(0, 0), type = "n", main = main, ylim = c((length(topics) + 
+      0.9), 1), xlim = c(1, n + 1), xaxt = "n", yaxt = "n", 
+      xlab = "", ylab = "", ...)
+    if (labeltype != "custom") {
+      lab <- apply(lab, 1, commas)
+      lab <- lab[topics]
+    }
+    if (is.null(topic.names)) {
+      topic.names <- sprintf("Topic %i:", topics)
+    }
+    lab <- lapply(lab, strwrap, width = width)
+    for (i in 1:length(topics)) {
+      if (i != length(topics)) 
+        lines(c(-1, n + 3), c(i + 1, i + 1), lty = 2)
+      string <- paste0(lab[[i]], collapse = "\n")
+      string <- sprintf("%s \n %s", topic.names[i], string)
+      text(n/2, (i + 0.5), string, family = family, cex = text.cex)
+    }
+  }
+  if (type == "perspectives") {
+    if (!contentcov) 
+      covarlevels <- c(1, 1)
+    if (is.null(topics)) 
+      stop("Must specify one or two topic numbers using topics")
+    if (length(topics) > 2) 
+      stop("Too many topics specified.")
+    if (length(topics) == 1) {
+      topics <- rep(topics, 2)
+    }
+    sametopics <- topics[1] == topics[2]
+    if (is.null(covarlevels)) {
+      covarlevels <- c(1, 2)
+    }
+    else {
+      if (length(covarlevels) > 2) 
+        stop("More than two covariate levels specified.")
+      if (length(covarlevels) == 1) 
+        covarlevels <- rep(covarlevels, 2)
+      covlabels <- model$seetings$covariates$yvarlevels
+      if (is.character(covarlevels)) {
+        covarlevels <- pmatch(covarlevels, model$settings$covariates$yvarlevels)
+        if (any(is.na(covarlevels))) 
+          stop("Unrecognized covariate levels")
+      }
+    }
+    samecovars <- covarlevels[1] == covarlevels[2]
+    if (is.null(plabels)) {
+      plabels <- vector(length = 2)
+      if (!contentcov) {
+        plabels[1] <- paste0(c("Topic ", topics[1]), 
+          collapse = "")
+        plabels[2] <- paste0(c("Topic ", topics[2]), 
+          collapse = "")
+      }
+      else {
+        if (sametopics & !samecovars) {
+          plabels[1] <- paste0(c(model$settings$covariates$yvarlevels[covarlevels[1]], 
+            "\n", "(Topic ", topics[1], ")"), collapse = "")
+          plabels[2] <- paste0(c(model$settings$covariates$yvarlevels[covarlevels[2]], 
+            "\n", "(Topic ", topics[2], ")"), collapse = "")
+        }
+        else {
+          plabels[1] <- paste0(c("Topic ", topics[1], 
+            ") \n", "(", model$settings$covariates$yvarlevels[covarlevels[1]], 
+            ")"), collapse = "")
+          plabels[2] <- paste0(c("Topic ", topics[2], 
+            ") \n", "(", model$settings$covariates$yvarlevels[covarlevels[2]], 
+            ")"), collapse = "")
+        }
+      }
+    }
+    left <- model$beta$logbeta[[covarlevels[1]]][topics[1], 
+      ]
+    right <- model$beta$logbeta[[covarlevels[2]]][topics[2], 
+      ]
+    nd2 <- floor(n/2)
+    words <- unique(c(order(left, decreasing = TRUE)[1:nd2], 
+      order(right, decreasing = TRUE)[1:nd2]))
+    scale <- pmax(exp(left[words]) + exp(right[words]))
+    scale <- asinh((scale/max(scale)) * 4)
+    diff <- exp(left[words]) - exp(right[words])
+    diff <- diff/max(abs(diff))
+    plot(c(0, 0), xlim = c(max(diff) + 0.1, min(diff) - 
+      0.1), ylim = c(-2 * length(diff), 6 * length(diff)), 
+      type = "n", xaxt = "n", xlab = "", main = main, 
+      yaxt = "n", ylab = "", bty = "n", ...)
+    segments(0, 0, 0, -2 * length(diff), lty = 2)
+    rand <- sample(seq(1, 6 * length(diff), by = 2), length(diff), 
+      replace = F)
+    thresh <- 0.1
+    negdiff <- diff * (diff < -thresh)
+    posdiff <- diff * (diff > thresh)
+    middiff <- diff * (diff < thresh & diff > -thresh)
+    colors <- grDevices::rgb(-negdiff + 0.75, 0.75, posdiff + 
+      0.75, maxColorValue = 2)
+    text(diff, rand, model$vocab[words], cex = text.cex * 
+      scale, col = colors, family = family)
+    text(0.75 * min(diff), -length(diff), as.character(plabels[2]), 
+      col = grDevices::rgb(1.6, 0.5, 0.5, 2, maxColorValue = 2), 
+      cex = 2, pos = 1)
+    text(0.75 * max(diff), -length(diff), as.character(plabels[1]), 
+      col = grDevices::rgb(0.5, 0.5, 1.6, 2, maxColorValue = 2), 
+      cex = 2, pos = 1)
+    segments(min(diff), -0.5 * length(diff), max(diff), 
+      -0.5 * length(diff))
+  }
+  if (type == "hist") {
+    N <- length(topics)
+    root <- ceiling(sqrt(N))
+    oldpar <- par(no.readonly = TRUE)
+    par(mfrow = c(root, root), oma = c(0, 0.5, 1.5, 0), 
+      mar = c(2, 2, 4, 1))
+    if (labeltype != "custom") {
+      lab <- apply(lab, 1, commas)
+      if (!contentcov) 
+        lab <- lab[topics]
+    }
+    if (is.null(topic.names)) {
+      topic.names <- sprintf("Topic %i:", topics)
+    }
+    lab <- sprintf("%s %s", topic.names, lab)
+    for (i in 1:length(topics)) {
+      theta_median <- median(model$theta[, topics[i]])
+      if (is.null(xlab)) 
+        xlab <- ""
+      if (is.null(xlim)) {
+        hist(model$theta[, i], main = lab[i], xlab = xlab, 
+          ylab = "", ylim = ylim, ...)
+      }
+      else {
+        hist(model$theta[, i], main = lab[i], xlab = xlab, 
+          ylab = "", xlim = xlim, ylim = ylim, ...)
+      }
+      abline(v = theta_median, col = "red", lwd = 1, lty = 2)
+    }
+    if (is.null(main)) {
+      title("Distribution of MAP Estimates of Document-Topic Proportions", 
+        outer = TRUE)
+    }
+    else {
+      title(main, outer = TRUE)
+    }
+    par(oldpar)
+  }
+}
+```
+
+Relationship formalisation
+```{r, fig.height = 4, fig.width = 9}
+plot_foo(stmodel_additional_content_variable, type = "perspectives", topics = 17)
+```
+
+Legal proceedings
+```{r, fig.height = 4, fig.width = 9}
+plot_foo(stmodel_additional_content_variable, type = "perspectives", topics = 11)
+```
+
+Children
+```{r, fig.height = 4, fig.width = 9}
+plot_foo(stmodel_additional_content_variable, type = "perspectives", topics = 14)
+```
+
+Equality march
+```{r, fig.height = 4, fig.width = 9}
+plot_foo(stmodel_additional_content_variable, type = "perspectives", topics = 16)
+```
+
+6) Phrase-bias Analysis
+
+```{r}
+library(lubridate)
+
+start_date <- as.POSIXct("2019-10-13 00:00:00", format = "%Y-%m-%d %H:%M:%S")
+
+# Calculate the number of months from the start date
+lgbtq_coverages <- lgbtq_coverages %>%
+  mutate(months_from_start = interval(start_date, pub_time) %/% months(1) + 1)
+```
+
+```{r}
+# Subsetting TV Stations
+tvp_data <- lgbtq_coverages %>% filter(network == "TVP")
+tvn_data <- lgbtq_coverages %>% filter(network == "TVN")
+```
+
+Dictionaries in each section based on words identified by STModel
+
+Plotting the prevalence of words representing selected topics over time
+
+Relationship formalisation
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+
+# Initialize list of words related to relationship formalisation
+marriage_words <- c("związków", "partnerskich", "samej", "płci", "jednopłciowych", "pary", "małżeństwa", "małżeństwo")  
+
+# Initialize empty lists to store counts
+tvp_counts <- c()
+tvn_counts <- c()
+
+# Get the unique months from the dataset
+unique_months <- unique(lgbtq_coverages$months_from_start)
+
+# Iterate over each month
+for (month in unique_months) {
+  # Filter tvp and tvn data for the current month
+  tvp_data_month <- tvp_data %>% filter(months_from_start == month)
+  tvn_data_month <- tvn_data %>% filter(months_from_start == month)
+  
+  # Initialize counts for the current month
+  tvp_count <- 0
+  tvn_count <- 0
+  
+  # Count occurrences of each negative word in tvp and tvn data for the current month
+  for (word in marriage_words) {
+    tvp_count <- tvp_count + sum(str_count(tvp_data_month$description, fixed(word)))
+    tvn_count <- tvn_count + sum(str_count(tvn_data_month$description, fixed(word)))
+  }
+  
+  # Append counts to lists
+  tvp_counts <- c(tvp_counts, tvp_count)
+  tvn_counts <- c(tvn_counts, tvn_count)
+}
+
+# Create a data frame with counts for plotting
+counts_df <- data.frame(
+  Month = unique_months,
+  TVP = tvp_counts,
+  TVN = tvn_counts
+)
+
+# Reshape the data frame into long format for ggplot2
+counts_df_long <- gather(counts_df, Source, Count, -Month)
+
+# Define the start date (October 2019) and end date (December 2023)
+start_date <- as.Date("2019-10-13")
+end_date <- as.Date("2023-12-19")
+
+# Create a vector of date labels from start to end date (every 12 months)
+date_labels <- seq(start_date, end_date, by = "1 year")
+
+network_colors <- c("#FF7F00", "#377EB8")
+
+# Plot counts using ggplot2
+ggplot(counts_df_long, aes(x = as.Date(start_date) + months(Month), y = Count, color = Source, group = Source)) +
+  geom_line(size=1.5) +
+  labs(title = "Counts of Relationship Formalisation Themed Words within TVP and TVN",
+       x = "Time",   # Set the x-axis label to "Time"
+       y = "Count",
+       color = "TV Station") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(limits = c(0, NA)) +  # set y-axis limits to start from 0
+  scale_color_manual(values = network_colors) +  # custom network colors
+  theme_minimal() +  # minimal theme
+  theme(plot.title = element_text(face = "bold", size = 13.5, hjust = 0.5),  # title style
+        axis.title = element_text(size = 14, face = "bold"),  # axis title style
+        axis.text = element_text(size = 12, face = "bold"),  # axis text size
+        legend.title = element_text(face = "bold", size = 12),  # legend title style
+        legend.text = element_text(size = 11, face="bold"),  # legend text size
+        axis.ticks.x = element_line(color = "lightgrey", size = 0.5))  # ticks on x-axis
+
+```
+
+Children
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+
+# Initialize list of children themed words
+schools_words <- c("dzieci", "edukacji", "szkół", "szkole", "Czarnek", "rodziców", "szkołach", "adopcji")  
+
+# Initialize empty lists to store counts
+tvp_counts <- c()
+tvn_counts <- c()
+
+# Get the unique months from the dataset
+unique_months <- unique(lgbtq_coverages$months_from_start)
+
+# Iterate over each month
+for (month in unique_months) {
+  # Filter tvp and tvn data for the current month
+  tvp_data_month <- tvp_data %>% filter(months_from_start == month)
+  tvn_data_month <- tvn_data %>% filter(months_from_start == month)
+  
+  # Initialize counts for the current month
+  tvp_count <- 0
+  tvn_count <- 0
+  
+  # Count occurrences of each negative word in tvp and tvn data for the current month
+  for (word in schools_words) {
+    tvp_count <- tvp_count + sum(str_count(tvp_data_month$description, fixed(word)))
+    tvn_count <- tvn_count + sum(str_count(tvn_data_month$description, fixed(word)))
+  }
+  
+  # Append counts to lists
+  tvp_counts <- c(tvp_counts, tvp_count)
+  tvn_counts <- c(tvn_counts, tvn_count)
+}
+
+# Create a data frame with counts for plotting
+counts_df <- data.frame(
+  Month = unique_months,
+  TVP = tvp_counts,
+  TVN = tvn_counts
+)
+
+# Reshape the data frame into long format for ggplot2
+counts_df_long <- gather(counts_df, Source, Count, -Month)
+
+# Define the start date (October 2019) and end date (December 2023)
+start_date <- as.Date("2019-10-13")
+end_date <- as.Date("2023-12-19")
+
+# Create a vector of date labels from start to end date (every 12 months)
+date_labels <- seq(start_date, end_date, by = "1 year")
+
+# Plot counts using ggplot2
+ggplot(counts_df_long, aes(x = as.Date(start_date) + months(Month), y = Count, color = Source, group = Source)) +
+  geom_line(size=1.5) +
+  labs(title = "Counts of Children Themed Words within TVP and TVN",
+       x = "Time",   # Set the x-axis label to "Time"
+       y = "Count",
+       color = "TV Station") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(limits = c(0, NA)) +  # set y-axis limits to start from 0
+  scale_color_manual(values = network_colors) +  # custom network colors
+  theme_minimal() +  # minimal theme
+  theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5),  # title style
+        axis.title = element_text(size = 14, face = "bold"),  # axis title style
+        axis.text = element_text(size = 12, face = "bold"),  # axis text size
+        legend.title = element_text(face = "bold", size = 12),  # legend title style
+        legend.text = element_text(size = 11, face="bold"),  # legend text size
+        axis.ticks.x = element_line(color = "lightgrey", size = 0.5))  # ticks on x-axis
+
+```
+
+Legal proceedings
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+
+# Initialize list of words associated with legal proceedings
+schools_words <- c("sąd", "sądu", "prokuratura", "uchwały") 
+
+# Initialize empty lists to store counts
+tvp_counts <- c()
+tvn_counts <- c()
+
+# Get the unique months from the dataset
+unique_months <- unique(lgbtq_coverages$months_from_start)
+
+# Iterate over each month
+for (month in unique_months) {
+  # Filter tvp and tvn data for the current month
+  tvp_data_month <- tvp_data %>% filter(months_from_start == month)
+  tvn_data_month <- tvn_data %>% filter(months_from_start == month)
+  
+  # Initialize counts for the current month
+  tvp_count <- 0
+  tvn_count <- 0
+  
+  # Count occurrences of each negative word in tvp and tvn data for the current month
+  for (word in schools_words) {
+    tvp_count <- tvp_count + sum(str_count(tvp_data_month$description, fixed(word)))
+    tvn_count <- tvn_count + sum(str_count(tvn_data_month$description, fixed(word)))
+  }
+  
+  # Append counts to lists
+  tvp_counts <- c(tvp_counts, tvp_count)
+  tvn_counts <- c(tvn_counts, tvn_count)
+}
+
+# Create a data frame with counts for plotting
+counts_df <- data.frame(
+  Month = unique_months,
+  TVP = tvp_counts,
+  TVN = tvn_counts
+)
+
+# Reshape the data frame into long format for ggplot2
+counts_df_long <- gather(counts_df, Source, Count, -Month)
+
+# Define the start date (October 2019) and end date (December 2023)
+start_date <- as.Date("2019-10-13")
+end_date <- as.Date("2023-12-19")
+
+# Create a vector of date labels from start to end date (every 12 months)
+date_labels <- seq(start_date, end_date, by = "1 year")
+
+# Plot counts using ggplot2
+ggplot(counts_df_long, aes(x = as.Date(start_date) + months(Month), y = Count, color = Source, group = Source)) +
+  geom_line(size=1.5) +
+  labs(title = "Counts of Legal Proceedings Themed Words within TVP and TVN",
+       x = "Time",   # Set the x-axis label to "Time"
+       y = "Count",
+       color = "TV Station") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(limits = c(0, NA)) +  # set y-axis limits to start from 0
+  scale_color_manual(values = network_colors) +  # custom network colors
+  theme_minimal() +  # minimal theme
+  theme(plot.title = element_text(face = "bold", size = 15, hjust = 0.5),  # title style
+        axis.title = element_text(size = 14, face = "bold"),  # axis title style
+        axis.text = element_text(size = 12, face = "bold"),  # axis text size
+        legend.title = element_text(face = "bold", size = 12),  # legend title style
+        legend.text = element_text(size = 11, face="bold"),  # legend text size
+        axis.ticks.x = element_line(color = "lightgrey", size = 0.5))  # ticks on x-axis
+
+```
+
+Equality march
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+
+# Initialize list of words associated with equality march
+schools_words <- c("marsz", "marszu", "równości", "uczestnicy", "organizatorzy")
+
+# Initialize empty lists to store counts
+tvp_counts <- c()
+tvn_counts <- c()
+
+# Get the unique months from the dataset
+unique_months <- unique(lgbtq_coverages$months_from_start)
+
+# Iterate over each month
+for (month in unique_months) {
+  # Filter tvp and tvn data for the current month
+  tvp_data_month <- tvp_data %>% filter(months_from_start == month)
+  tvn_data_month <- tvn_data %>% filter(months_from_start == month)
+  
+  # Initialize counts for the current month
+  tvp_count <- 0
+  tvn_count <- 0
+  
+  # Count occurrences of each negative word in tvp and tvn data for the current month
+  for (word in schools_words) {
+    tvp_count <- tvp_count + sum(str_count(tvp_data_month$description, fixed(word)))
+    tvn_count <- tvn_count + sum(str_count(tvn_data_month$description, fixed(word)))
+  }
+  
+  # Append counts to lists
+  tvp_counts <- c(tvp_counts, tvp_count)
+  tvn_counts <- c(tvn_counts, tvn_count)
+}
+
+# Create a data frame with counts for plotting
+counts_df <- data.frame(
+  Month = unique_months,
+  TVP = tvp_counts,
+  TVN = tvn_counts
+)
+
+# Reshape the data frame into long format for ggplot2
+counts_df_long <- gather(counts_df, Source, Count, -Month)
+
+# Define the start date (October 2019) and end date (December 2023)
+start_date <- as.Date("2019-10-13")
+end_date <- as.Date("2023-12-19")
+
+# Create a vector of date labels from start to end date (every 12 months)
+date_labels <- seq(start_date, end_date, by = "1 year")
+
+# Plot counts using ggplot2
+ggplot(counts_df_long, aes(x = as.Date(start_date) + months(Month), y = Count, color = Source, group = Source)) +
+  geom_line(size=1.5) +
+  labs(title = "Counts of Equality March Themed Words within TVP and TVN",
+       x = "Time",   # Set the x-axis label to "Time"
+       y = "Count",
+       color = "TV Station") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(limits = c(0, NA)) +  # set y-axis limits to start from 0
+  scale_color_manual(values = network_colors) +  # custom network colors
+  theme_minimal() +  # minimal theme
+  theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5),  # title style
+        axis.title = element_text(size = 14, face = "bold"),  # axis title style
+        axis.text = element_text(size = 12, face = "bold"),  # axis text size
+        legend.title = element_text(face = "bold", size = 12),  # legend title style
+        legend.text = element_text(size = 11, face="bold"),  # legend text size
+        axis.ticks.x = element_line(color = "lightgrey", size = 0.5))  # ticks on x-axis
+
+```
+
+LGBTQ+ community related words (figure appearing within descriptive statistics section; Figure 2)
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+
+# Initialize list of words related to LGBTQ+ community
+neutral_words <- c("osoby", "lgbt", "anty-lgbt", "lgbtq", "gejem", "gej", "LGBT", "LGBTQ", "anty-LGBT", "LGBTI", "LGBTQI", "lesbijka", "lesbijki", "transseksualny", "trans", "queer")  # Replace with actual negative words
+
+# Initialize empty lists to store counts
+tvp_counts <- c()
+tvn_counts <- c()
+
+# Get the unique months from the dataset
+unique_months <- unique(lgbtq_coverages$months_from_start)
+
+# Iterate over each month
+for (month in unique_months) {
+  # Filter tvp and tvn data for the current month
+  tvp_data_month <- tvp_data %>% filter(months_from_start == month)
+  tvn_data_month <- tvn_data %>% filter(months_from_start == month)
+  
+  # Initialize counts for the current month
+  tvp_count <- 0
+  tvn_count <- 0
+  
+  # Count occurrences of each negative word in tvp and tvn data for the current month
+  for (word in neutral_words) {
+    tvp_count <- tvp_count + sum(str_count(tvp_data_month$description, fixed(word)))
+    tvn_count <- tvn_count + sum(str_count(tvn_data_month$description, fixed(word)))
+  }
+  
+  # Append counts to lists
+  tvp_counts <- c(tvp_counts, tvp_count)
+  tvn_counts <- c(tvn_counts, tvn_count)
+}
+
+# Create a data frame with counts for plotting
+counts_df <- data.frame(
+  Month = unique_months,
+  TVP = tvp_counts,
+  TVN = tvn_counts
+)
+
+# Reshape the data frame into long format for ggplot2
+counts_df_long <- gather(counts_df, Source, Count, -Month)
+
+# Define the start date (October 2019) and end date (December 2023)
+start_date <- as.Date("2019-10-13")
+end_date <- as.Date("2023-12-19")
+
+# Create a vector of date labels from start to end date (every 12 months)
+date_labels <- seq(start_date, end_date, by = "1 year")
+
+network_colors <- c("#FF7F00", "#377EB8")
+
+# Plot counts using ggplot2
+ggplot(counts_df_long, aes(x = as.Date(start_date) + months(Month), y = Count, color = Source, group = Source)) +
+  geom_line(size=1.5) +
+  labs(title = "Counts of LGBTQ+ Community Related Words within TVP and TVN",
+       x = "Time",   # Set the x-axis label to "Time"
+       y = "Count",
+       color = "TV Station") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(limits = c(0, NA)) +  # set y-axis limits to start from 0
+  scale_color_manual(values = network_colors) +  # custom network colors
+  theme_minimal() +  # minimal theme
+  theme(plot.title = element_text(face = "bold", size = 15, hjust = 0.5),  # title style
+        axis.title = element_text(size = 14, face = "bold"),  # axis title style
+        axis.text = element_text(size = 12, face = "bold"),  # axis text size
+        legend.title = element_text(face = "bold", size = 12),  # legend title style
+        legend.text = element_text(size = 11, face="bold"),  # legend text size
+        axis.ticks.x = element_line(color = "lightgrey", size = 0.5))  # ticks on x-axis
+
+```
+
+Table for Appendix
+```{r}
+library(tidyr)
+
+counts_df_long <- counts_df %>%
+  pivot_longer(cols = c(TVP, TVN), names_to = "Source", values_to = "Count")
+
+# Convert the long format data frame back to wide format
+counts_df_wide <- counts_df_long %>%
+  pivot_wider(names_from = Source, values_from = Count, values_fill = list(Count = 0)) %>%
+  arrange(Month)  # Replace 'Month' with the actual name of the month column
+
+# Print the wide format data frame
+print(counts_df_wide)
+
+write.csv(counts_df_wide, "counts_df_wide.csv", row.names = FALSE)
+```
+
+```{r}
+averages <- counts_df_wide %>%
+  summarize(
+    Avg_TVP = mean(TVP, na.rm = TRUE),
+    Avg_TVN = mean(TVN, na.rm = TRUE)
+  )
+
+averages
+```
+
+7) Supervised Classification Model
+
+Subset 20% of data from the dataset to label it manually. 
+
+```{r}
+set.seed(123)
+sample <- sample(1:nrow(lgbtq_coverages), 0.2*nrow(lgbtq_coverages))
+
+sample_data <- lgbtq_coverages[sample, ]
+
+table(sample_data$network)
+```
+
+```{r}
+write.csv(sample_data, "sample_data.csv")
+```
+
+Downloading two manually labelled datasets.
+```{r}
+my_sample <- read.csv("sample_csv_data.csv")
+fi_sample <- read.csv("sample_csv_fi.csv")
+lgbtq_coverages <- read.csv("lgbtq_coverages.csv")
+```
+
+```{r}
+sample_tvp <- my_sample[my_sample$tvn==0, ]
+sample_tvn <- my_sample[my_sample$tvn==1, ]
+
+fi_sample_tvp <- fi_sample[fi_sample$tvn==0, ]
+fi_sample_tvn <- fi_sample[fi_sample$tvn==1, ]
+
+#Comparing the scores
+table(my_sample$score)
+table(sample_tvp$score)
+table(sample_tvn$score)
+
+table(fi_sample$score)
+table(fi_sample_tvp$score)
+table(fi_sample_tvn$score)
+```
+
+```{r}
+fi_sample$fi_score <- fi_sample$score
+```
+
+Adding scores as columns in one dataframe
+```{r}
+library(dplyr)
+
+fi_sample_selected <- fi_sample %>%
+  select(X, fi_score)
+
+# Merging data frames on column 'X'
+merged_sample <- my_sample %>%
+  left_join(fi_sample_selected, by = "X")
+```
+
+```{r}
+sum(merged_sample$score==1 & merged_sample$fi_score==-1)
+```
+
+Measuring Inter-Rater Reliability (% agreement between raters)
+Ref: https://www.statisticshowto.com/inter-rater-reliability/
+
+```{r}
+#Computing inter-rater reliability
+matching_rows <- sum(merged_sample$score == merged_sample$fi_score, na.rm = TRUE)
+total_rows <- nrow(merged_sample)
+inter_rater_reliability <- matching_rows / total_rows
+```
+
+```{r}
+merged_sample$final_score <- (merged_sample$score + merged_sample$fi_score) / 2
+table(merged_sample$final_score)
+```
+
+```{r}
+merged_sample$positive <- ifelse(merged_sample$final_score > 0, 1, 0)
+merged_sample$negative <- ifelse(merged_sample$final_score < 0, 1, 0)
+```
+
+Exploring the distribution of positive and negative labels.
+```{r}
+table(merged_sample$positive)
+table(merged_sample$negative)
+```
+
+First, I'm gonna train the model on 20% of this sample data to check its performance and maximize it. 
+
+Pre-processing
+```{r}
+library(quanteda)
+library(quanteda.textmodels)
+library(quanteda.textplots)
+library(quanteda.textstats)
+
+stopwordsPL <- readLines("polish.stopwords.txt", encoding = "UTF-8")
+
+merged_sample$description <- gsub('@[0-9_A-Za-z]+', '@', merged_sample$description)
+tvcorpus <- corpus(merged_sample$description)
+tokens <- tokens(tvcorpus, remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, remove_url = TRUE)
+tok <- tokens_remove(tokens, pattern = c("faktach", "playerze", "i_świat", "w_kropce", "kropce", "czarno", "kropce_nad", "nad_i", "magazynu_polska", "materiał_magazynu"))
+toks <- tokens_ngrams(tok, n = 1:2)
+twdfm <- dfm(toks, remove_url=TRUE, verbose=TRUE)
+
+# Identify most frequent words
+top_words <- names(sort(colSums(twdfm), decreasing = TRUE))[1:10]
+
+# Remove top words
+twdfm <- dfm_remove(twdfm, pattern = top_words)
+
+#Remove stopwords
+twdfm <- dfm_remove(twdfm, pattern = stopwordsPL)
+
+#Remove features occuring in less than 2 documents
+twdfm <- dfm_trim(twdfm, min_docfreq = 2, verbose=TRUE)
+```
+
+Splitting into train and test subsets, firstly negative/non-negative scores are predicted
+```{r}
+set.seed(123)
+training_subset <- sample(1:nrow(merged_sample), floor(.80 * nrow(merged_sample)))
+test_subset <- (1:nrow(merged_sample))[1:nrow(merged_sample) %in% training_subset == FALSE]
+```
+
+Ridge regression (Lasso and Elastic net regressions were done on the same code, modifying alpha parameter)
+```{r}
+library(glmnet) 
+require(doMC)
+registerDoMC(cores=3) #functions for parallel execution of R code on machines with multiple cores or processors
+#class_weights <- ifelse(merged_sample$negative[training_subset] == 1, 2, 1)
+ridge <- cv.glmnet(twdfm[training_subset,], merged_sample$negative[training_subset], 
+family="binomial", alpha=0, nfolds=5, parallel=TRUE, intercept=TRUE,
+	type.measure="class")
+plot(ridge)
+```
+
+```{r}
+# Extracting the optimal lambda values
+lambda_min <- ridge$lambda.min
+lambda_1se <- ridge$lambda.1se
+
+# Choose the lambda you want to use (lambda_min or lambda_1se)
+optimal_lambda <- lambda_min # or lambda_1se
+
+# Fit the final model on the entire training data
+final_model <- glmnet(twdfm[training_subset,], merged_sample$negative[training_subset], 
+                      family="binomial", alpha=0, 
+                      lambda=optimal_lambda, intercept=TRUE)
+
+# Print summary of the final model
+print(final_model)
+```
+
+Evaluating ridge (or lasso/elastic net if alpha adjusted) performance
+```{r}
+## function to compute accuracy
+accuracy <- function(ypred, y){
+	tab <- table(ypred, y)
+	return(sum(diag(tab))/sum(tab))
+}
+# function to compute precision
+precision <- function(ypred, y){
+	tab <- table(ypred, y)
+	return((tab[2,2])/(tab[2,1]+tab[2,2]))
+}
+# function to compute recall
+recall <- function(ypred, y){
+	tab <- table(ypred, y)
+	return(tab[2,2]/(tab[1,2]+tab[2,2]))
+}
+
+set.seed(123)
+# computing predicted values
+preds <- predict(ridge, twdfm[test_subset,], type="response")
+preds <- ifelse(preds > 0.5, 1, 0)
+# confusion matrix
+table(preds, merged_sample$negative[test_subset])
+# performance metrics
+accuracy(preds, merged_sample$negative[test_subset])
+# for specific rows
+precision(preds==1, merged_sample$negative[test_subset]==1)
+recall(preds==1, merged_sample$negative[test_subset]==1)
+precision(preds==0, merged_sample$negative[test_subset]==0)
+recall(preds==0, merged_sample$negative[test_subset]==0)
+```
+
+XGBoost
+```{r}
+library(xgboost)
+library(caret)
+library(Matrix)
+
+# Convert the data to a DMatrix object
+dtrain <- xgb.DMatrix(data = as.matrix(twdfm[training_subset, ]), 
+                      label = merged_sample$negative[training_subset])
+
+```
+
+```{r}
+# Convert the 'positive' column to a factor
+merged_sample$negative <- as.factor(merged_sample$negative)
+# Convert the 'positive' column to a factor with valid R names
+merged_sample$negative <- factor(merged_sample$negative, levels = c(0, 1), labels = c("Non.negative", "Negative"))
+
+
+#Define train
+train_control <- trainControl(
+  method = "cv",              # Cross-validation
+  number = 5,                 # Number of folds
+  verboseIter = TRUE,         # Print training log
+  allowParallel = TRUE,       # Allow parallel processing
+  classProbs = TRUE,          # Enable class probabilities
+  summaryFunction = twoClassSummary # Use two-class summary
+)
+
+# Define the parameter grid for hyperparameter tuning
+xgb_grid <- expand.grid(
+  nrounds = c(100, 200),           # Number of boosting rounds
+  max_depth = c(3, 6, 9),          # Maximum tree depth
+  eta = c(0.01, 0.1, 0.3),         # Learning rate
+  gamma = c(0, 1),                 # Minimum loss reduction
+  colsample_bytree = c(0.6, 0.8),  # Subsample ratio of columns
+  min_child_weight = c(1, 5),      # Minimum sum of instance weight
+  subsample = c(0.8, 1)            # Subsample ratio of the training instances
+)
+
+# Train the model using caret
+xgb_model <- train(
+  x = as.matrix(twdfm[training_subset, ]),
+  y = merged_sample$negative[training_subset],
+  method = "xgbTree",
+  trControl = train_control,
+  tuneGrid = xgb_grid,
+  metric = "ROC",            # Use ROC AUC as the evaluation metric
+  verbose = TRUE
+)
+
+```
+
+```{r}
+# Extract the best parameters
+best_params <- xgb_model$bestTune
+
+# Convert the training data to a DMatrix object
+dtrain <- xgb.DMatrix(data = as.matrix(twdfm[training_subset, ]), 
+                      label = as.numeric(merged_sample$negative[training_subset]) - 1)
+
+# Train the final model with the best parameters
+final_model <- xgboost(
+  data = dtrain,
+  max_depth = best_params$max_depth,
+  eta = best_params$eta,
+  nrounds = best_params$nrounds,
+  gamma = best_params$gamma,
+  colsample_bytree = best_params$colsample_bytree,
+  min_child_weight = best_params$min_child_weight,
+  subsample = best_params$subsample,
+  objective = "binary:logistic",
+  eval_metric = "error",
+  nthread = 4,    # Adjust based on your system
+  verbose = 1
+)
+
+```
+
+Evaluating XGBoost perfomance
+
+```{r}
+# Convert the test data to a DMatrix object
+dtest <- xgb.DMatrix(data = as.matrix(twdfm[test_subset, ]), 
+                     label = as.numeric(merged_sample$negative[test_subset]) - 1) # Convert to numeric 0 and 1
+
+# Make predictions
+predictions <- predict(final_model, dtest)
+predicted_labels <- ifelse(predictions > 0.5, "Negative", "Non.negative")
+
+# Calculate accuracy
+accuracy <- sum(predicted_labels == merged_sample$negative[test_subset]) / length(predicted_labels)
+print(paste("Accuracy:", accuracy))
+
+# Confusion matrix
+confusionMatrix(as.factor(predicted_labels), merged_sample$negative[test_subset])
+```
+
+
+Secondly, positive/non-positive scores are predicted.
+
+Ridge regression (Lasso and Elastic net were done on the same code, modifying the akpha parameter)
+```{r}
+library(glmnet)
+require(doMC)
+registerDoMC(cores=3) #functions for parallel execution of R code on machines with multiple cores or processors
+
+#Assigning weights to positive class as it is largely underrepresented
+class_weights <- ifelse(merged_sample$positive[training_subset] == 1, 2, 1)
+
+# Train Ridge regression with class weights
+ridge <- cv.glmnet(twdfm[training_subset, ], merged_sample$positive[training_subset], 
+                   weights = class_weights, family = "binomial", alpha = 0.5, nfolds = 5, 
+                   parallel = TRUE, intercept = TRUE, type.measure = "class")
+plot(ridge)
+```
+
+Evaluating ridge (or lasso/elastic net if alpha adjusted) performance
+```{r}
+set.seed(123)
+# computing predicted values
+preds <- predict(ridge, twdfm[test_subset,], type="response")
+preds <- ifelse(preds > 0.5, 1, 0)
+# confusion matrix
+table(preds, merged_sample$positive[test_subset])
+# performance metrics
+accuracy(preds, merged_sample$positive[test_subset])
+# for specific rows
+precision(preds==1, merged_sample$positive[test_subset]==1)
+recall(preds==1, merged_sample$positive[test_subset]==1)
+precision(preds==0, merged_sample$positive[test_subset]==0)
+recall(preds==0, merged_sample$positive[test_subset]==0)
+```
+
+XGBoost
+```{r}
+library(xgboost)
+library(caret)
+library(Matrix)
+
+# Convert the data to a DMatrix object
+dtrain <- xgb.DMatrix(data = as.matrix(twdfm[training_subset, ]), 
+                      label = merged_sample$positive[training_subset])
+
+```
+
+```{r}
+# Convert the 'positive' column to a factor
+merged_sample$positive <- as.factor(merged_sample$positive)
+# Convert the 'positive' column to a factor with valid R names
+merged_sample$positive <- factor(merged_sample$positive, levels = c(0, 1), labels = c("Non.positive", "Positive"))
+
+
+#Define train
+train_control <- trainControl(
+  method = "cv",              # Cross-validation
+  number = 5,                 # Number of folds
+  verboseIter = TRUE,         # Print training log
+  allowParallel = TRUE,       # Allow parallel processing
+  classProbs = TRUE,          # Enable class probabilities
+  summaryFunction = twoClassSummary # Use two-class summary
+)
+
+# Define the parameter grid for hyperparameter tuning
+xgb_grid <- expand.grid(
+  nrounds = c(100, 200),           # Number of boosting rounds
+  max_depth = c(3, 6, 9),          # Maximum tree depth
+  eta = c(0.01, 0.1, 0.3),         # Learning rate
+  gamma = c(0, 1),                 # Minimum loss reduction
+  colsample_bytree = c(0.6, 0.8),  # Subsample ratio of columns
+  min_child_weight = c(1, 5),      # Minimum sum of instance weight
+  subsample = c(0.8, 1)            # Subsample ratio of the training instances
+)
+
+# Train the model using caret
+xgb_model <- train(
+  x = as.matrix(twdfm[training_subset, ]),
+  y = merged_sample$positive[training_subset],
+  method = "xgbTree",
+  trControl = train_control,
+  tuneGrid = xgb_grid,
+  metric = "ROC",            # Use ROC AUC as the evaluation metric
+  verbose = TRUE
+)
+
+```
+
+
+```{r}
+# Extract the best parameters
+best_params <- xgb_model$bestTune
+
+# Convert the training data to a DMatrix object
+dtrain <- xgb.DMatrix(data = as.matrix(twdfm[training_subset, ]), 
+                      label = as.numeric(merged_sample$positive[training_subset]) - 1)
+
+# Train the final model with the best parameters
+final_model <- xgboost(
+  data = dtrain,
+  max_depth = best_params$max_depth,
+  eta = best_params$eta,
+  nrounds = best_params$nrounds,
+  gamma = best_params$gamma,
+  colsample_bytree = best_params$colsample_bytree,
+  min_child_weight = best_params$min_child_weight,
+  subsample = best_params$subsample,
+  objective = "binary:logistic",
+  eval_metric = "error",
+  nthread = 4,    # Adjust based on your system
+  verbose = 1
+)
+```
+
+Evaluating XGBoost perfomance
+```{r}
+# Convert the test data to a DMatrix object
+dtest <- xgb.DMatrix(data = as.matrix(twdfm[test_subset, ]), 
+                     label = as.numeric(merged_sample$positive[test_subset]) - 1) # Convert to numeric 0 and 1
+
+# Make predictions
+predictions <- predict(final_model, dtest)
+predicted_labels <- ifelse(predictions > 0.5, "Positive", "Non.positive")
+
+# Calculate accuracy
+accuracy <- sum(predicted_labels == merged_sample$positive[test_subset]) / length(predicted_labels)
+print(paste("Accuracy:", accuracy))
+
+# Confusion matrix
+confusionMatrix(as.factor(predicted_labels), merged_sample$positive[test_subset])
+```
+
+Choosing XGBoost for its highest average accuracy between both negative and positive models.
+
+Redownloading everything again as in the training process values predicted values have been imputed.
+```{r}
+my_sample <- read.csv("sample_csv_data.csv")
+fi_sample <- read.csv("sample_csv_fi.csv")
+lgbtq_coverages <- read.csv("lgbtq_coverages.csv")
+```
+
+```{r}
+fi_sample$fi_score <- fi_sample$score
+```
+
+```{r}
+library(dplyr)
+
+fi_sample_selected <- fi_sample %>%
+  select(X, fi_score)
+
+#Merging data frames on column 'X'
+merged_sample <- my_sample %>%
+  left_join(fi_sample_selected, by = "X")
+```
+
+```{r}
+merged_sample$final_score <- (merged_sample$score + merged_sample$fi_score) / 2
+table(merged_sample$final_score)
+```
+
+```{r}
+merged_sample$positive <- ifelse(merged_sample$final_score > 0, 1, 0)
+merged_sample$negative <- ifelse(merged_sample$final_score < 0, 1, 0)
+```
+
+Training on the 100% of manually labelled data and predicting on the unlabelled data.
+
+```{r}
+#Add negative and positive columns to the unlabelled data
+lgbtq_coverages$negative <- NA
+lgbtq_coverages$positive <- NA
+```
+
+```{r}
+#If X is in the sample, assign the negative and positive column values to the negative and positive columns
+lgbtq_coverages$negative[lgbtq_coverages$description %in% merged_sample$description] <- merged_sample$negative
+lgbtq_coverages$positive[lgbtq_coverages$description %in% merged_sample$description] <- merged_sample$positive
+```
+
+Pre-processing
+```{r}
+library(quanteda)
+library(quanteda.textmodels)
+library(quanteda.textplots)
+library(quanteda.textstats)
+
+stopwordsPL <- readLines("polish.stopwords.txt", encoding = "UTF-8")
+
+lgbtq_coverages$description <- gsub('@[0-9_A-Za-z]+', '@', lgbtq_coverages$description)
+tvcorpus <- corpus(lgbtq_coverages$description)
+tokens <- tokens(tvcorpus, remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, remove_url = TRUE)
+tok <- tokens_remove(tokens, pattern = c("faktach", "playerze", "i_świat", "w_kropce", "kropce", "czarno", "kropce_nad", "nad_i", "magazynu_polska", "materiał_magazynu"))
+toks <- tokens_ngrams(tok, n = 1:2)
+twdfm <- dfm(toks, remove_url=TRUE, verbose=TRUE)
+
+# Identify most frequent words
+top_words <- names(sort(colSums(twdfm), decreasing = TRUE))[1:10]
+
+# Remove top words
+twdfm <- dfm_remove(twdfm, pattern = top_words)
+
+#Remove stopwords
+twdfm <- dfm_remove(twdfm, pattern = stopwordsPL)
+
+#Remove features occuring in less than 2 documents
+twdfm <- dfm_trim(twdfm, min_docfreq = 2, verbose=TRUE)
+```
+
+For positive/non-positive XGBoost classification
+
+```{r}
+# Convert the entire 'negative' column to factor first
+lgbtq_coverages$positive <- as.factor(lgbtq_coverages$positive)
+lgbtq_coverages$positive <- factor(lgbtq_coverages$positive, levels = c(0, 1), labels = c("Non.positive", "Positive"))
+
+# I want to separate to train and test. Train if negative is not NA, test otherwise
+train_pos <- which(!is.na(lgbtq_coverages$positive))
+test_pos<- which(is.na(lgbtq_coverages$positive))
+```
+
+```{r}
+library(xgboost)
+library(caret)
+library(Matrix)
+
+# Convert the data to a DMatrix object
+dtrain_pos <- xgb.DMatrix(data = as.matrix(twdfm[train_pos, ]), 
+                      label = lgbtq_coverages$positive[train_pos])
+
+```
+
+```{r}
+#Define train
+train_control <- trainControl(
+  method = "cv",              # Cross-validation
+  number = 3,                 # Number of folds
+  verboseIter = TRUE,         # Print training log
+  allowParallel = TRUE,       # Allow parallel processing
+  classProbs = TRUE,          # Enable class probabilities
+  summaryFunction = twoClassSummary # Use two-class summary
+)
+
+# Define the parameter grid for hyperparameter tuning
+xgb_grid <- expand.grid(
+  nrounds = c(50, 100),           # Number of boosting rounds
+  max_depth = c(3, 6),          # Maximum tree depth
+  eta = c(0.05, 0.1),         # Learning rate
+  gamma = c(0, 1),                 # Minimum loss reduction
+  colsample_bytree = c(0.6, 0.8),  # Subsample ratio of columns
+  min_child_weight = c(1, 3),      # Minimum sum of instance weight
+  subsample = c(0.8, 1)            # Subsample ratio of the training instances
+)
+
+# Train the model using caret
+xgb_model_pos <- train(
+  x = as.matrix(twdfm[train_pos, ]),
+  y = lgbtq_coverages$positive[train_pos],
+  method = "xgbTree",
+  trControl = train_control,
+  tuneGrid = xgb_grid,
+  metric = "ROC",            # Use ROC AUC as the evaluation metric
+  verbose = TRUE
+)
+
+```
+
+```{r}
+# Extract the best parameters
+best_params_pos <- xgb_model_pos$bestTune
+
+# Convert the training data to a DMatrix object
+dtrain_pos <- xgb.DMatrix(data = as.matrix(twdfm[train_pos, ]), 
+                      label = as.numeric(lgbtq_coverages$positive[train_pos]) - 1)
+
+# Train the final model with the best parameters
+final_model_pos <- xgboost(
+  data = dtrain_pos,
+  max_depth = best_params_pos$max_depth,
+  eta = best_params_pos$eta,
+  nrounds = best_params_pos$nrounds,
+  gamma = best_params_pos$gamma,
+  colsample_bytree = best_params_pos$colsample_bytree,
+  min_child_weight = best_params_pos$min_child_weight,
+  subsample = best_params_pos$subsample,
+  objective = "binary:logistic",
+  eval_metric = "error",
+  nthread = 4,    # Adjust based on your system
+  verbose = 1
+)
+
+```
+
+```{r}
+# Convert the test data to a DMatrix object
+# Create DMatrix for test data without labels
+dtest_pos <- xgb.DMatrix(data = as.matrix(twdfm[test_pos, ]))
+
+# Make predictions
+predictions_pos <- predict(final_model_pos, dtest_pos)
+predicted_labels_pos <- ifelse(predictions_pos > 0.4, 1, 0)
+
+lgbtq_coverages$positive <- ifelse(lgbtq_coverages$positive == "Positive", 1, 0)
+
+lgbtq_coverages$positive <- as.character(lgbtq_coverages$positive)
+lgbtq_coverages$positive[test_pos] <- predicted_labels_pos
+lgbtq_coverages$positive <- as.factor(lgbtq_coverages$positive)
+```
+
+Plotting the change in % of positive articles between the TV stations over time
+```{r}
+#Percentage plot
+data_aggregated_pos_percent <- lgbtq_coverages %>%
+  mutate(month = floor_date(pub_time, "month")) %>%
+  group_by(month, network) %>%
+  summarise(sum_positive = sum(positive),
+            total_count = n()) %>%
+  ungroup()
+
+# Calculate percentage of positive out of total
+data_aggregated_pos_percent <- data_aggregated_pos_percent %>%
+  mutate(percentage_positive = sum_positive / total_count * 100)
+
+# Plot the data
+ggplot(data_aggregated_pos_percent, aes(x = month, y = percentage_positive, color = network, group = network)) +
+  geom_line() +
+  labs(title = "% of Positive Out of Total by Month and Network",
+       x = "Month",
+       y = "% Positive out of Total",
+       color = "Network") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%b %Y") +
+  theme_minimal()
+```
+
+
+Negative/non-negative XGBoost classification
+
+```{r}
+# Convert the entire 'negative' column to factor first
+lgbtq_coverages$negative <- as.factor(lgbtq_coverages$negative)
+lgbtq_coverages$negative <- factor(lgbtq_coverages$negative, levels = c(0, 1), labels = c("Non.negative", "Negative"))
+
+#I wanna separate to train and test. Train if negative is not NA, test otherwise
+train_neg <- which(!is.na(lgbtq_coverages$negative))
+test_neg <- which(is.na(lgbtq_coverages$negative))
+```
+
+```{r}
+library(xgboost)
+library(caret)
+library(Matrix)
+
+# Convert the data to a DMatrix object
+dtrain <- xgb.DMatrix(data = as.matrix(twdfm[train_neg, ]), 
+                      label = lgbtq_coverages$negative[train_neg])
+
+```
+
+```{r}
+#Define train
+train_control <- trainControl(
+  method = "cv",              # Cross-validation
+  number = 3,                 # Number of folds
+  verboseIter = TRUE,         # Print training log
+  allowParallel = TRUE,       # Allow parallel processing
+  classProbs = TRUE,          # Enable class probabilities
+  summaryFunction = twoClassSummary # Use two-class summary
+)
+
+# Define the parameter grid for hyperparameter tuning
+xgb_grid <- expand.grid(
+  nrounds = c(50, 100),           # Number of boosting rounds
+  max_depth = c(3, 6),          # Maximum tree depth
+  eta = c(0.05, 0.1),         # Learning rate
+  gamma = c(0, 1),                 # Minimum loss reduction
+  colsample_bytree = c(0.6, 0.8),  # Subsample ratio of columns
+  min_child_weight = c(1, 3),      # Minimum sum of instance weight
+  subsample = c(0.8, 1)            # Subsample ratio of the training instances
+)
+
+# Train the model using caret
+xgb_model <- train(
+  x = as.matrix(twdfm[train_neg, ]),
+  y = lgbtq_coverages$negative[train_neg],
+  method = "xgbTree",
+  trControl = train_control,
+  tuneGrid = xgb_grid,
+  metric = "ROC",            # Use ROC AUC as the evaluation metric
+  verbose = TRUE
+)
+
+```
+
+```{r}
+# Extract the best parameters
+best_params <- xgb_model$bestTune
+
+# Convert the training data to a DMatrix object
+dtrain <- xgb.DMatrix(data = as.matrix(twdfm[train_neg, ]), 
+                      label = as.numeric(lgbtq_coverages$negative[train_neg]) - 1)
+
+# Train the final model with the best parameters
+final_model <- xgboost(
+  data = dtrain,
+  max_depth = best_params$max_depth,
+  eta = best_params$eta,
+  nrounds = best_params$nrounds,
+  gamma = best_params$gamma,
+  colsample_bytree = best_params$colsample_bytree,
+  min_child_weight = best_params$min_child_weight,
+  subsample = best_params$subsample,
+  objective = "binary:logistic",
+  eval_metric = "error",
+  nthread = 4,    # Adjust based on your system
+  verbose = 1
+)
+
+```
+```{r}
+lgbtq_coverages <- lgbtq_coverages_copy
+lgbtq_coverages_good_pos <- lgbtq_coverages
+```
+
+```{r}
+# Convert the test data to a DMatrix object
+# Create DMatrix for test data without labels
+dtest_neg <- xgb.DMatrix(data = as.matrix(twdfm[test_neg, ]))
+
+# Make predictions
+predictions_neg <- predict(final_model, dtest_neg)
+predicted_labels_neg <- ifelse(predictions_neg > 0.47, 1, 0)
+table(predicted_labels_neg)
+
+#It seems to already be 0, 1
+#lgbtq_coverages$positive <- ifelse(lgbtq_coverages$negative == "Negative", 1, 0)
+
+lgbtq_coverages$negative <- as.character(lgbtq_coverages$negative)
+lgbtq_coverages$negative[test_neg] <- predicted_labels_neg
+lgbtq_coverages$negative <- as.factor(lgbtq_coverages$negative)
+```
+
+Plotting the change in % of positive articles between the TV stations over time
+```{r}
+lgbtq_coverages$pub_time <- as.Date(lgbtq_coverages$pub_time)
+lgbtq_coverages$negative <- as.numeric(as.character(lgbtq_coverages$negative))
+
+#Percentage plot
+data_aggregated_neg_percent <- lgbtq_coverages %>%
+  mutate(month = floor_date(pub_time, "month")) %>%
+  group_by(month, network) %>%
+  summarise(sum_negative = sum(negative),
+            total_count = n()) %>%
+  ungroup()
+
+# Calculate percentage of positive out of total
+data_aggregated_neg_percent <- data_aggregated_neg_percent %>%
+  mutate(percentage_negative = sum_negative / total_count * 100)
+
+# Plot the data
+ggplot(data_aggregated_neg_percent, aes(x = month, y = percentage_negative, color = network, group = network)) +
+  geom_line() +
+  labs(title = "% of Negative Out of Total by Month and Network",
+       x = "Month",
+       y = "% Negative out of Total",
+       color = "Network") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%b %Y") +
+  theme_minimal()
+```
+
+Fix the issue when both negative and positive columns are 0, as it's a very small amount assigning them 0
+```{r}
+lgbtq_coverages_both_pos_neg <- lgbtq_coverages
+lgbtq_coverages$positive[lgbtq_coverages$positive == 1 & lgbtq_coverages$negative == 1] <- 0
+lgbtq_coverages$negative[lgbtq_coverages$positive == 1 & lgbtq_coverages$negative == 1] <- 0
+```
+
+Graph for positive
+```{r}
+#Percentage plot
+data_aggregated_pos_percent2 <- lgbtq_coverages %>%
+  mutate(month = floor_date(pub_time, "month")) %>%
+  group_by(month, network) %>%
+  summarise(sum_positive = sum(positive),
+            total_count = n()) %>%
+  ungroup()
+
+# Calculate percentage of positive out of total
+data_aggregated_pos_percent2 <- data_aggregated_pos_percent2 %>%
+  mutate(percentage_positive = sum_positive / total_count * 100)
+
+# Plot the data
+ggplot(data_aggregated_pos_percent2, aes(x = month, y = percentage_positive, color = network, group = network)) +
+  geom_line() +
+  labs(title = "% of Positive Out of Total by Month and Network",
+       x = "Month",
+       y = "% Positive out of Total",
+       color = "Network") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%b %Y") +
+  theme_minimal()
+```
+
+```{r}
+library(ggplot2)
+library(scales)  # for date formatting
+
+# Custom color palette for networks
+network_colors <- c("#FF7F00", "#377EB8")
+
+# Plotting code with enhancements
+ggplot(data_aggregated_pos_percent2, aes(x = month, y = percentage_positive, color = network, group = network)) +
+  geom_line(size = 1.5) +  # thicker lines
+  labs(title = "% of Positive Articles by Month and TV Station",
+       x = "Time",
+       y = "% Positive out of Total",
+       color = "TV Station") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +  # more frequent date labels
+  scale_y_continuous(limits = c(0, NA)) +  # set y-axis limits to start from 0
+  scale_color_manual(values = network_colors) +  # custom network colors
+  theme_minimal() +  # minimal theme
+  theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5),  # title style
+        axis.title = element_text(size = 14, face = "bold"),  # axis title style
+        axis.text = element_text(size = 12, face = "bold"),  # axis text size
+        legend.title = element_text(face = "bold", size = 12),  # legend title style
+        legend.text = element_text(size = 11, face="bold"),  # legend text size
+       # axis.line.x = element_line(color = "lightgrey"),  # x-axis line color
+        axis.ticks.x = element_line(color = "lightgrey", size = 0.5))  # ticks on x-axis
+```
+
+
+Graph for Negative
+```{r}
+#Percentage plot
+data_aggregated_neg_percent2 <- lgbtq_coverages %>%
+  mutate(month = floor_date(pub_time, "month")) %>%
+  group_by(month, network) %>%
+  summarise(sum_negative = sum(negative),
+            total_count = n()) %>%
+  ungroup()
+
+# Calculate percentage of positive out of total
+data_aggregated_neg_percent2 <- data_aggregated_neg_percent2 %>%
+  mutate(percentage_negative = sum_negative / total_count * 100)
+
+# Plot the data
+ggplot(data_aggregated_neg_percent2, aes(x = month, y = percentage_negative, color = network, group = network)) +
+  geom_line() +
+  labs(title = "% of Negative Out of Total by Month and Network",
+       x = "Month",
+       y = "% Negative out of Total",
+       color = "Network") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%b %Y") +
+  theme_minimal()
+```
+
+```{r}
+library(ggplot2)
+library(scales)  # for date formatting
+
+# Custom color palette for networks
+network_colors <- c("#FF7F00", "#377EB8")
+
+# Plotting code with enhancements
+ggplot(data_aggregated_neg_percent2, aes(x = month, y = percentage_negative, color = network, group = network)) +
+  geom_line(size = 1.5) +  # thicker lines
+  labs(title = "% of Negative Articles by Month and TV Station",
+       x = "Time",
+       y = "% Negative out of Total",
+       color = "TV Station") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +  # more frequent date labels
+  scale_y_continuous(limits = c(0, NA)) +  # set y-axis limits to start from 0
+  scale_color_manual(values = network_colors) +  # custom network colors
+  theme_minimal() +  # minimal theme
+  theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5),  # title style
+        axis.title = element_text(size = 14, face = "bold"),  # axis title style
+        axis.text = element_text(face = "bold", size = 12),  # axis text size
+        legend.title = element_text(face = "bold", size = 12),  # legend title style
+        legend.text = element_text(face = "bold", size = 11),  # legend text size
+        axis.ticks.x = element_line(color = "lightgrey", size = 0.5))  # ticks on x-axis
+```
+
+Merge both aggregated datasets and create a column for the difference between positive and negative
+```{r}
+data_aggregated_pos$sum_negative <- data_aggregated_neg_percent$sum_negative
+data_aggregated_pos$difference <- data_aggregated_pos$sum_positive - data_aggregated_pos$sum_negative
+```
+
+Plotting the difference between positive and negative
+```{r}
+#Plot the data
+library(ggplot2)
+library(scales)  # for date formatting
+
+# Custom color palette for networks
+network_colors <- c("#FF7F00", "#377EB8")
+
+# Plotting code with enhancements
+ggplot(data_aggregated_pos, aes(x = month, y = difference, color = network, group = network)) +
+  geom_line(size = 1.5) +  # thicker lines
+  labs(title = "Difference by Month and TV Station",
+       x = "Time",
+       y = "Difference",
+       color = "TV Station") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +  # monthly date labels
+  scale_color_manual(values = network_colors) +  # custom network colors
+  theme_minimal() +  # minimal theme
+  theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5),  # title style
+        axis.title = element_text(size = 14, face = "bold"),  # axis title style
+        axis.text = element_text(face = "bold", size = 12),  # axis text size
+        legend.title = element_text(face = "bold", size = 12),  # legend title style
+        legend.text = element_text(face = "bold", size = 11))  # legend text size
+```
